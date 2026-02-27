@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self';">
+    <title>إدارة المنتجات - أبو كميل POS</title>
+    <link rel="stylesheet" href="../styles/products.css">
+</head>
+<body>
+    <!-- ========== الشريط الجانبي ========== -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>أبو كميل POS</h2>
+            <span class="version">v4.0</span>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span><span>الرئيسية</span>
+            </a>
+            <a href="invoice.html" class="nav-item">
+                <span class="nav-icon">🧾</span>
+                <span>فاتورة جديدة</span>
+            </a>
+            <a href="customers.html" class="nav-item">
+                <span class="nav-icon">👥</span>
+                <span>الزبائن</span>
+            </a>
+            <a href="products.html" class="nav-item active">
+                <span class="nav-icon">📦</span>
+                <span>المنتجات</span>
+            </a>
+            <a href="debts.html" class="nav-item">
+                <span class="nav-icon">💰</span>
+                <span>الأرصدة والديون</span>
+            </a>
+            <a href="reports.html" class="nav-item">
+                <span class="nav-icon">📊</span>
+                <span>التقارير</span>
+            </a>
+            <a href="settings.html" class="nav-item">
+                <span class="nav-icon">⚙️</span>
+                <span>الإعدادات</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <span class="user-icon">👤</span>
+                <span id="currentUser">المدير</span>
+            </div>
+            <button id="btnLogout" class="btn-logout">تسجيل خروج</button>
+        </div>
+    </aside>
+
+    <!-- ========== المحتوى الرئيسي ========== -->
+    <main class="main-content">
+        <!-- شريط علوي -->
+        <header class="top-bar">
+            <div class="page-title">
+                <h1>📦 إدارة المنتجات والمخزون</h1>
+                <p class="subtitle">إضافة وتعديل المنتجات ومتابعة المخزون</p>
+            </div>
+            <div class="top-bar-actions">
+                <div class="search-box">
+                    <input type="text" id="searchProduct" placeholder="🔍 ابحث باسم أو باركود..." autocomplete="off">
+                </div>
+                <button id="btnAddProduct" class="btn btn-primary">
+                    <span>➕</span> منتج جديد
+                </button>
+                <button id="btnManageCategories" class="btn btn-secondary">
+                    <span>📂</span> التصنيفات
+                </button>
+            </div>
+        </header>
+
+        <!-- إحصائيات سريعة -->
+        <section class="stats-bar">
+            <div class="stat-card">
+                <div class="stat-icon">📦</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalProducts">0</span>
+                    <span class="stat-label">إجمالي المنتجات</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statActiveProducts">0</span>
+                    <span class="stat-label">منتجات نشطة</span>
+                </div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-icon">⚠️</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statLowStock">0</span>
+                    <span class="stat-label">مخزون منخفض</span>
+                </div>
+            </div>
+            <div class="stat-card danger">
+                <div class="stat-icon">🚫</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statOutOfStock">0</span>
+                    <span class="stat-label">نفد من المخزون</span>
+                </div>
+            </div>
+            <div class="stat-card info">
+                <div class="stat-icon">💰</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalValue">0 ₪</span>
+                    <span class="stat-label">قيمة المخزون</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- فلاتر -->
+        <section class="filters-bar">
+            <button class="filter-btn active" data-filter="all">الكل</button>
+            <button class="filter-btn" data-filter="active">نشطة</button>
+            <button class="filter-btn" data-filter="low_stock">مخزون منخفض</button>
+            <button class="filter-btn" data-filter="out_of_stock">نفد المخزون</button>
+            <button class="filter-btn" data-filter="inactive">غير نشطة</button>
+
+            <div class="category-filter">
+                <select id="filterCategory">
+                    <option value="all">كل التصنيفات</option>
+                </select>
+            </div>
+
+            <div class="sort-box">
+                <select id="sortProducts">
+                    <option value="name_asc">الاسم (أ-ي)</option>
+                    <option value="name_desc">الاسم (ي-أ)</option>
+                    <option value="price_high">الأعلى سعراً</option>
+                    <option value="price_low">الأقل سعراً</option>
+                    <option value="stock_low">الأقل مخزون</option>
+                    <option value="stock_high">الأكثر مخزون</option>
+                    <option value="recent">الأحدث</option>
+                </select>
+            </div>
+
+            <div class="view-toggle">
+                <button class="view-btn active" data-view="table" title="عرض جدول">📋</button>
+                <button class="view-btn" data-view="cards" title="عرض بطاقات">🗂</button>
+            </div>
+        </section>
+
+        <!-- عرض الجدول -->
+        <section class="products-view" id="tableView">
+            <div class="products-table-wrapper">
+                <table class="products-table" id="productsTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>الباركود</th>
+                            <th>المنتج</th>
+                            <th>التصنيف</th>
+                            <th>نوع البيع</th>
+                            <th>الوحدة</th>
+                            <th>سعر البيع</th>
+                            <th>سعر التكلفة</th>
+                            <th>الربح</th>
+                            <th>المخزون</th>
+                            <th>الحالة</th>
+                            <th>إجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productsTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- عرض البطاقات -->
+        <section class="products-view" id="cardsView" style="display:none;">
+            <div class="products-grid" id="productsGrid">
+            </div>
+        </section>
+
+        <!-- حالة فارغة -->
+        <div id="noProducts" class="empty-state" style="display:none;">
+            <span class="empty-icon">📦</span>
+            <p>لا توجد منتجات</p>
+            <button class="btn btn-primary" id="btnAddProductEmpty">إضافة أول منتج</button>
+        </div>
+    </main>
+
+    <!-- ========== مودال إضافة/تعديل منتج ========== -->
+    <div class="modal-overlay" id="productModal">
+        <div class="modal modal-large">
+            <div class="modal-header">
+                <h3 id="modalTitle">إضافة منتج جديد</h3>
+                <button class="modal-close" id="btnCloseModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="productForm">
+                    <input type="hidden" id="productId">
+
+                    <div class="form-section">
+                        <h4 class="section-title">📋 المعلومات الأساسية</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="productBarcode">الباركود <span class="required">*</span></label>
+                                <div class="input-with-btn">
+                                    <input type="text" id="productBarcode" placeholder="امسح الباركود أو أدخله يدوياً" required>
+                                    <button type="button" class="btn btn-sm btn-secondary" id="btnGenerateBarcode" title="توليد باركود تلقائي">🔄</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="productName">اسم المنتج <span class="required">*</span></label>
+                                <input type="text" id="productName" placeholder="مثال: بيبسي 500مل" required>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="productCategory">التصنيف <span class="required">*</span></label>
+                                <select id="productCategory" required>
+                                    <option value="">-- اختر التصنيف --</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="productSaleType">نوع البيع</label>
+                                <select id="productSaleType">
+                                    <option value="unit">بالحبة</option>
+                                    <option value="weight">بالوزن (كيلو)</option>
+                                    <option value="pack">بالعلبة/الكرتونة</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="productUnit">الوحدة</label>
+                                <input type="text" id="productUnit" placeholder="مثال: حبة، كيلو، علبة" value="حبة">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <h4 class="section-title">💰 الأسعار</h4>
+                        <div class="form-row form-row-3">
+                            <div class="form-group">
+                                <label for="productPrice">سعر البيع (₪) <span class="required">*</span></label>
+                                <input type="number" id="productPrice" min="0" step="0.5" placeholder="0.00" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="productCost">سعر التكلفة (₪)</label>
+                                <input type="number" id="productCost" min="0" step="0.5" placeholder="0.00">
+                            </div>
+                            <div class="form-group">
+                                <label>هامش الربح</label>
+                                <div class="profit-display" id="profitDisplay">
+                                    <span class="profit-amount">0.00 ₪</span>
+                                    <span class="profit-percent">(0%)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <h4 class="section-title">📦 المخزون</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="productStock">الكمية الحالية</label>
+                                <input type="number" id="productStock" min="0" step="1" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="productMinStock">الحد الأدنى للتنبيه</label>
+                                <input type="number" id="productMinStock" min="0" step="1" value="5">
+                                <small class="hint">تنبيه عند وصول المخزون لهذا الرقم</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="productActive" checked>
+                            <span>المنتج نشط (متاح للبيع)</span>
+                        </label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelModal">إلغاء</button>
+                <button class="btn btn-primary" id="btnSaveProduct">💾 حفظ المنتج</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== مودال التصنيفات ========== -->
+    <div class="modal-overlay" id="categoriesModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>📂 إدارة التصنيفات</h3>
+                <button class="modal-close" id="btnCloseCategoriesModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="add-category-row">
+                    <input type="text" id="newCategoryName" placeholder="اسم التصنيف الجديد...">
+                    <input type="text" id="newCategoryIcon" placeholder="الأيقونة (مثال: 🥤)" maxlength="4" style="width:80px; text-align:center;">
+                    <button class="btn btn-primary btn-sm" id="btnAddCategory">➕ إضافة</button>
+                </div>
+                <div class="categories-list" id="categoriesList">
+                    <!-- يتم ملؤها من JavaScript -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCloseCategoriesFooter">إغلاق</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== مودال تعديل المخزون السريع ========== -->
+    <div class="modal-overlay" id="stockModal">
+        <div class="modal modal-small">
+            <div class="modal-header">
+                <h3>📦 تعديل المخزون</h3>
+                <button class="modal-close" id="btnCloseStockModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="stock-info">
+                    <p>المنتج: <strong id="stockProductName">-</strong></p>
+                    <p>المخزون الحالي: <strong id="stockCurrentQty">0</strong></p>
+                </div>
+                <div class="form-group">
+                    <label>نوع العملية</label>
+                    <div class="stock-operation-btns">
+                        <button class="stock-op-btn active" data-op="add">➕ إضافة</button>
+                        <button class="stock-op-btn" data-op="subtract">➖ سحب</button>
+                        <button class="stock-op-btn" data-op="set">✏️ تعيين</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="stockQty">الكمية</label>
+                    <input type="number" id="stockQty" min="0" step="1" placeholder="أدخل الكمية">
+                </div>
+                <div class="form-group">
+                    <label for="stockReason">السبب</label>
+                    <input type="text" id="stockReason" placeholder="مثال: توريد جديد، جرد...">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelStock">إلغاء</button>
+                <button class="btn btn-primary" id="btnConfirmStock">✅ تأكيد</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== تنبيهات ========== -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../scripts/products.js"></script>
+</body>
+</html>

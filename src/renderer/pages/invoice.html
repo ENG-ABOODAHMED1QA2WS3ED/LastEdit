@@ -1,0 +1,447 @@
+﻿<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>فاتورة جديدة — سوبر ماركت أبو كميل</title>
+    <link rel="stylesheet" href="../styles/main.css">
+    <link rel="stylesheet" href="../styles/invoice.css">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- الشريط الجانبي -->
+        <aside class="sidebar locked" id="sidebar">
+            <div class="sidebar-header">
+                <h2>سوبر ماركت</h2>
+                <h1>أبو كميل</h1>
+            </div>
+            <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span><span>الرئيسية</span>
+            </a>
+                <div class="nav-section">
+                    <span class="nav-section-title">يومي</span>
+                    <a href="#" class="nav-item disabled" data-page="dashboard">
+                        <span class="nav-icon">🏠</span>
+                        <span class="nav-text">الرئيسية</span>
+                        <span class="nav-shortcut">F1</span>
+                    </a>
+                    <a href="#" class="nav-item nav-item-primary nav-item-active">
+                        <span class="nav-icon">➕</span>
+                        <span class="nav-text">فاتورة جديدة</span>
+                        <span class="nav-shortcut">F2</span>
+                    </a>
+                    <a href="#" class="nav-item disabled" data-page="balances">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">الأرصدة</span>
+                        <span class="nav-shortcut">F3</span>
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <span class="nav-section-title">مالي</span>
+                    <a href="#" class="nav-item disabled" data-page="matching">
+                        <span class="nav-icon">🔄</span>
+                        <span class="nav-text">المطابقة</span>
+                        <span class="nav-shortcut">F4</span>
+                    </a>
+                    <a href="#" class="nav-item disabled" data-page="reports">
+                        <span class="nav-icon">📈</span>
+                        <span class="nav-text">التقارير</span>
+                        <span class="nav-shortcut">F6</span>
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <span class="nav-section-title">نظام</span>
+                    <a href="#" class="nav-item disabled" data-page="closing">
+                        <span class="nav-icon">🔒</span>
+                        <span class="nav-text">إقفال اليومية</span>
+                        <span class="nav-shortcut">F9</span>
+                    </a>
+                    <a href="#" class="nav-item disabled" data-page="management">
+                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-text">المزيد</span>
+                        <span class="nav-shortcut">F10</span>
+                    </a>
+                </div>
+            </nav>
+            <div class="sidebar-exit">
+                <button class="exit-btn" id="exitInvoiceBtn">🔓 خروج [Esc+تأكيد]</button>
+            </div>
+        </aside>
+
+        <!-- المحتوى الرئيسي -->
+        <main class="main-content">
+
+            <!-- الشريط العلوي -->
+            <header class="invoice-top-bar">
+                <div class="top-bar-right">
+                    <span class="invoice-number" id="invoiceNumber">فاتورة جديدة #0000</span>
+                    <span class="sale-mode-badge">🔒 وضع البيع</span>
+                </div>
+                <div class="top-bar-left">
+                    <span class="cashier-info" id="cashierInfo">👤 الكاشير</span>
+                    <span class="invoice-timer" id="invoiceTimer">⏱️ مفتوحة منذ 0:00</span>
+                    <span class="current-time" id="currentTime">00:00</span>
+                </div>
+            </header>
+
+            <!-- محتوى الفاتورة -->
+            <div class="invoice-content">
+
+                <!-- الصف العلوي -->
+                <div class="invoice-top-row">
+
+                    <!-- قسم الزبون -->
+                    <div class="invoice-section customer-section">
+                        <div class="section-header">
+                            <h3>قسم الزبون</h3>
+                        </div>
+                        <div class="customer-search-row">
+                            <div class="search-input-wrapper">
+                                <span class="search-icon">🔍</span>
+                                <input type="text" id="customerSearch" placeholder="اسم أو رقم هاتف الزبون..." autocomplete="off">
+                            </div>
+                            <button class="walk-in-btn" id="walkInBtn">زبون عابر</button>
+                        </div>
+
+                        <!-- زر إضافة زبون جديد -->
+                        <button class="add-customer-btn" id="addCustomerBtn">➕ إضافة زبون جديد</button>
+
+                        <!-- القائمة المنسدلة -->
+                        <div class="customer-dropdown" id="customerDropdown"></div>
+
+                        <!-- الزبون المختار -->
+                        <div class="selected-customer" id="selectedCustomer" style="display:none;">
+                            <div class="customer-info-card">
+                                <div class="customer-name-row">
+                                    <span class="customer-name" id="customerName"></span>
+                                    <span class="customer-phone" id="customerPhone"></span>
+                                    <button class="remove-customer-btn" id="removeCustomerBtn">✕</button>
+                                </div>
+                                <div class="customer-debt-info" id="customerDebtInfo"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- قسم المنتجات -->
+                    <div class="invoice-section products-section">
+                        <div class="section-header">
+                            <h3>قسم المنتجات</h3>
+                            <button class="manual-search-btn" id="manualSearchBtn">🔍 بحث يدوي</button>
+                        </div>
+
+                        <div class="barcode-input-wrapper">
+                            <span class="barcode-icon">📷</span>
+                            <input type="text" id="barcodeInput" placeholder="امسح الباركود هنا..." autocomplete="off" autofocus>
+                            <span class="barcode-hint">الباركود جاهز – امسح المنتج</span>
+                        </div>
+
+                        <div class="products-table-container">
+                            <table class="products-table" id="productsTable">
+                                <thead>
+                                    <tr>
+                                        <th class="col-product">المنتج</th>
+                                        <th class="col-qty">الكمية</th>
+                                        <th class="col-price">السعر</th>
+                                        <th class="col-total">المجموع</th>
+                                        <th class="col-action"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="productsTableBody"></tbody>
+                            </table>
+                            <div class="empty-products" id="emptyProducts">
+                                <p>📦 لم تُضف منتجات بعد</p>
+                                <p class="hint">امسح الباركود أو استخدم البحث اليدوي</p>
+                            </div>
+                        </div>
+
+                        <div class="invoice-total-bar">
+                            <span class="total-label">الإجمالي:</span>
+                            <span class="total-amount" id="totalAmount">0.00₪</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- الصف السفلي -->
+                <div class="invoice-bottom-row">
+
+                    <!-- قسم الدفع -->
+                    <div class="invoice-section payment-section">
+                        <div class="section-header">
+                            <h3>قسم الدفع</h3>
+                        </div>
+
+                        <!-- طرق الدفع -->
+                        <div class="payment-methods">
+                            <button class="payment-btn active" data-method="cash" id="payCash">
+                                <span class="pay-icon">💵</span>
+                                <span class="pay-text">كاش</span>
+                            </button>
+                            <button class="payment-btn" data-method="transfer" id="payTransfer">
+                                <span class="pay-icon">🏦</span>
+                                <span class="pay-text">بنك فلسطين</span>
+                            </button>
+                            <button class="payment-btn" data-method="wallet" id="payWallet">
+                                <span class="pay-icon">📱</span>
+                                <span class="pay-text">PalPay</span>
+                            </button>
+                            <button class="payment-btn" data-method="card" id="payCard">
+                                <span class="pay-icon">💳</span>
+                                <span class="pay-text">فيزا</span>
+                            </button>
+                        </div>
+
+                        <!-- زر الدين -->
+                        <button class="debt-btn" id="payDebt" style="display:none;">
+                            📝 تسجيل كدين (يحتاج موافقة صاحب المحل)
+                        </button>
+
+                        <!-- رابط الدفع المختلط -->
+                        <a href="#" class="mixed-payment-link" id="mixedPaymentLink">مختلط: أكثر من طريقة ↔</a>
+
+                        <!-- تفاصيل الكاش -->
+                        <div class="payment-details" id="cashDetails">
+                            <div class="cash-row">
+                                <div class="cash-field">
+                                    <label>المبلغ المدفوع:</label>
+                                    <input type="number" id="cashReceived" placeholder="0" min="0" step="0.5">
+                                </div>
+                                <div class="cash-field">
+                                    <label>الباقي:</label>
+                                    <span class="change-amount" id="cashChange">0.00₪</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- تفاصيل التحويل (بنك فلسطين / PalPay) -->
+                        <div class="payment-details" id="transferDetails" style="display:none;">
+
+                            <!-- تشيك بوكس حساب شخص آخر -->
+                            <div class="alt-account-section">
+                                <label class="alt-account-checkbox">
+                                    <input type="checkbox" id="altAccountCheck">
+                                    <span>التحويل من حساب شخص آخر؟</span>
+                                </label>
+                                <div class="alt-account-fields" id="altAccountFields" style="display:none;">
+                                    <input type="text" id="altAccountName" placeholder="اسم صاحب الحساب كما هو بالبنك (مثال: سناء المشهراوي)">
+                                    <select id="altAccountRelation">
+                                        <option value="">العلاقة (اختياري)...</option>
+                                        <option value="أب">أب</option>
+                                        <option value="أم">أم</option>
+                                        <option value="أخ">أخ</option>
+                                        <option value="أخت">أخت</option>
+                                        <option value="زوج/زوجة">زوج/زوجة</option>
+                                        <option value="صديق">صديق</option>
+                                        <option value="أخرى">أخرى</option>
+                                    </select>
+                                    <div class="alt-account-hint">
+                                        💡 هذا الاسم يُستخدم عند المطابقة — إذا وصل تحويل باسم هذا الشخص سيتم ربطه بهذه الفاتورة تلقائياً
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- حقل الرقم المرجعي -->
+                            <div class="bank-reference-section" style="margin: 10px 0; padding: 8px; background: #f0f7ff; border-radius: 8px; border: 1px solid #d0e3f7;">
+                                <label style="display:block; margin-bottom:5px; font-weight:bold; color:#1a73e8;">
+                                     رقم الإشعار البنكي (اختياري)
+                                </label>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <input type="text" id="bankReference" placeholder="مثال: 178831404" 
+                                        style="flex:1; padding:8px 12px; border:1px solid #ccc; border-radius:6px; font-size:14px; direction:ltr; text-align:center;"
+                                        maxlength="10" pattern="[0-9]{8,10}">
+                                    <span id="bankRefStatus" style="font-size:18px;"></span>
+                                </div>
+                                <div id="bankRefMessage" style="font-size:12px; margin-top:4px; color:#666;">
+                                    يظهر في إشعار التحويل من البنك  يضمن مطابقة فورية 100%
+                                </div>
+                            </div>
+
+                            <div class="transfer-type-row">
+                                <label>
+                                    <input type="radio" name="transferType" value="immediate" checked>
+                                    سيحول الآن – أنتظر التأكيد
+                                </label>
+                                <label>
+                                    <input type="radio" name="transferType" value="deferred">
+                                    سيحول لاحقاً ⏰
+                                </label>
+                            </div>
+                            <div class="deferred-options" id="deferredOptions" style="display:none;">
+                                <label>المهلة:</label>
+                                <div class="deadline-buttons">
+                                    <button type="button" class="deadline-btn" data-hours="1">ساعة</button>
+                                    <button type="button" class="deadline-btn" data-hours="2">ساعتين</button>
+                                    <button type="button" class="deadline-btn" data-hours="4">4 ساعات</button>
+                                    <button type="button" class="deadline-btn active" data-hours="0">نهاية اليوم</button>
+                                </div>
+                                <div class="deferred-warning">
+                                    ⚠️ ستصبح 🔴 متأخرة عند انتهاء المهلة
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- تفاصيل الدين -->
+                        <div class="payment-details debt-details-panel" id="debtDetails" style="display:none;">
+                            <div class="debt-warning-top">⛔ بدون رمز + سبب = لا يمكن الحفظ</div>
+                            <div class="debt-info-row">
+                                <div class="debt-info-card">
+                                    <span class="debt-info-label">رصيد الزبون الحالي</span>
+                                    <span class="debt-info-value" id="debtCurrentBalance">0.00₪</span>
+                                </div>
+                                <div class="debt-info-card">
+                                    <span class="debt-info-label">السقف المتاح</span>
+                                    <span class="debt-info-value" id="debtAvailable">0.00₪</span>
+                                </div>
+                            </div>
+                            <div class="debt-commitment" id="debtCommitment"></div>
+                            <div class="debt-pin-section">
+                                <label>رمز PIN صاحب المحل (4 أرقام):</label>
+                                <div class="pin-inputs">
+                                    <input type="password" class="pin-digit" maxlength="1" data-pin="1">
+                                    <input type="password" class="pin-digit" maxlength="1" data-pin="2">
+                                    <input type="password" class="pin-digit" maxlength="1" data-pin="3">
+                                    <input type="password" class="pin-digit" maxlength="1" data-pin="4">
+                                </div>
+                                <span class="pin-status" id="pinStatus"></span>
+                            </div>
+                            <div class="debt-reason-section">
+                                <label>سبب الدين (إلزامي) *</label>
+                                <div class="reason-options">
+                                    <label><input type="radio" name="debtReason" value="زبون دائم - سيسدد نهاية الأسبوع"> زبون دائم - أسبوع</label>
+                                    <label><input type="radio" name="debtReason" value="زبون دائم - سيسدد نهاية الشهر"> زبون دائم - شهر</label>
+                                    <label><input type="radio" name="debtReason" value="ما معه مصاري الآن"> ما معه مصاري</label>
+                                    <label><input type="radio" name="debtReason" value="بانتظار مصروف / راتب"> بانتظار راتب</label>
+                                    <label><input type="radio" name="debtReason" value="other"> سبب آخر:</label>
+                                </div>
+                                <input type="text" id="debtReasonOther" placeholder="أدخل السبب هنا..." style="display:none;">
+                            </div>
+                        </div>
+
+                        <!-- الدفع المختلط -->
+                        <div class="payment-details" id="mixedDetails" style="display:none;">
+                            <div class="mixed-row">
+                                <div class="mixed-field">
+                                    <label>الطريقة الأولى:</label>
+                                    <select id="mixedMethod1">
+                                        <option value="cash">💵 كاش</option>
+                                        <option value="transfer">🏦 بنك فلسطين</option>
+                                        <option value="wallet">📱 PalPay</option>
+                                        <option value="card">💳 فيزا</option>
+                                    </select>
+                                    <input type="number" id="mixedAmount1" placeholder="المبلغ" min="0" step="0.5">
+                                </div>
+                                <div class="mixed-field">
+                                    <label>الطريقة الثانية:</label>
+                                    <select id="mixedMethod2">
+                                        <option value="transfer">🏦 بنك فلسطين</option>
+                                        <option value="cash">💵 كاش</option>
+                                        <option value="wallet">📱 PalPay</option>
+                                        <option value="card">💳 فيزا</option>
+                                    </select>
+                                    <span class="mixed-remaining" id="mixedRemaining">الباقي: 0.00₪</span>
+                                </div>
+                            </div>
+                            <div class="mixed-warning">⚠️ الحد الأقصى: طريقتان فقط</div>
+                        </div>
+                    </div>
+
+                    <!-- قسم الحفظ -->
+                    <div class="invoice-section save-section">
+                        <div class="notes-field">
+                            <input type="text" id="invoiceNotes" placeholder="ملاحظات (اختياري)...">
+                        </div>
+                        <div class="save-buttons">
+                            <button class="save-btn" id="saveInvoiceBtn">✅ تأكيد وحفظ [Enter]</button>
+                            <button class="print-btn" id="printBtn">🖨️ طباعة إيصال</button>
+                        </div>
+                        <div class="save-hint">
+                            ⚠️ Enter = حفظ مباشر | Esc = خروج
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- نافذة البحث اليدوي -->
+    <div class="modal-overlay" id="manualSearchModal" style="display:none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>🔍 بحث عن منتج</h3>
+                <button class="modal-close" id="closeManualSearch">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="manualProductSearch" placeholder="اكتب اسم المنتج..." autofocus>
+                <div class="manual-search-results" id="manualSearchResults"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- نافذة إضافة زبون جديد -->
+    <div class="modal-overlay" id="addCustomerModal" style="display:none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>➕ إضافة زبون جديد</h3>
+                <button class="modal-close" id="closeAddCustomer">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="add-customer-form">
+                    <div class="form-row">
+                        <label>اسم الزبون *</label>
+                        <input type="text" id="newCustomerName" placeholder="الاسم الكامل...">
+                    </div>
+                    <div class="form-row">
+                        <label>رقم الهاتف</label>
+                        <input type="text" id="newCustomerPhone" placeholder="05xxxxxxxx" dir="ltr">
+                    </div>
+                    <div class="form-row">
+                        <label>العنوان</label>
+                        <input type="text" id="newCustomerAddress" placeholder="العنوان (اختياري)...">
+                    </div>
+                    <div class="form-row">
+                        <label>سقف الدين (₪)</label>
+                        <input type="number" id="newCustomerDebtLimit" placeholder="0" min="0" value="0">
+                    </div>
+                    <div class="form-row">
+                        <label>ملاحظات</label>
+                        <input type="text" id="newCustomerNotes" placeholder="ملاحظات (اختياري)...">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-success" id="confirmAddCustomer">✅ إضافة وتحديد</button>
+                <button class="modal-btn modal-btn-secondary" id="cancelAddCustomer">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- نافذة تأكيد الخروج -->
+    <div class="modal-overlay" id="exitModal" style="display:none;">
+        <div class="modal-card modal-small">
+            <div class="modal-header">
+                <h3>⚠️ تأكيد الخروج</h3>
+            </div>
+            <div class="modal-body">
+                <p>هل تريد إلغاء الفاتورة الحالية؟</p>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-danger" id="confirmExit">نعم، إلغاء الفاتورة</button>
+                <button class="modal-btn modal-btn-secondary" id="cancelExit">لا، متابعة</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- نافذة المراجعة السريعة -->
+    <div class="modal-overlay" id="reviewModal" style="display:none;">
+        <div class="modal-card modal-small review-card">
+            <div class="review-content" id="reviewContent"></div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script src="../scripts/invoice.js"></script>
+</body>
+</html>

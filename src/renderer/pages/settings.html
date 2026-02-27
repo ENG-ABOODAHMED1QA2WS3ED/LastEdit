@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self';">
+    <title>الإعدادات - أبو كميل POS</title>
+    <link rel="stylesheet" href="../styles/settings.css">
+</head>
+<body>
+
+    <!-- ===== الشريط الجانبي ===== -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>أبو كميل POS</h2>
+            <span class="version">v5.0</span>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span><span>الرئيسية</span>
+            </a>
+            <a href="invoice.html" class="nav-item">
+                <span class="nav-icon">🧾</span><span>فاتورة جديدة</span>
+            </a>
+            <a href="customers.html" class="nav-item">
+                <span class="nav-icon">👥</span><span>الزبائن</span>
+            </a>
+            <a href="products.html" class="nav-item">
+                <span class="nav-icon">📦</span><span>المنتجات</span>
+            </a>
+            <a href="debts.html" class="nav-item">
+                <span class="nav-icon">💰</span><span>الأرصدة والديون</span>
+            </a>
+            <a href="matching.html" class="nav-item">
+                <span class="nav-icon">🔄</span><span>المطابقة اليومية</span>
+            </a>
+            <a href="reports.html" class="nav-item">
+                <span class="nav-icon">📊</span><span>التقارير</span>
+            </a>
+            <a href="settings.html" class="nav-item active">
+                <span class="nav-icon">⚙️</span><span>الإعدادات</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <span class="user-icon">👤</span>
+                <span id="currentUser">المدير</span>
+            </div>
+            <button id="btnLogout" class="btn-logout">تسجيل خروج</button>
+        </div>
+    </aside>
+
+    <!-- ===== المحتوى الرئيسي ===== -->
+    <main class="main-content">
+
+        <!-- الشريط العلوي -->
+        <header class="top-bar">
+            <div class="page-title">
+                <h1>⚙️ الإعدادات</h1>
+                <p class="subtitle">إدارة النظام والمستخدمين والنسخ الاحتياطي</p>
+            </div>
+        </header>
+
+        <!-- ===== التبويبات ===== -->
+        <div class="settings-tabs">
+            <button class="settings-tab active" data-tab="store">🏪 المتجر</button>
+            <button class="settings-tab" data-tab="receipt">🧾 الإيصال</button>
+            <button class="settings-tab" data-tab="security">🔒 الأمان</button>
+            <button class="settings-tab" data-tab="users">👥 المستخدمين</button>
+            <button class="settings-tab" data-tab="backup">💾 النسخ الاحتياطي</button>
+            <button class="settings-tab" data-tab="audit">📋 سجل التدقيق</button>
+        </div>
+
+        <!-- =============================== -->
+        <!-- تبويب إعدادات المتجر -->
+        <!-- =============================== -->
+        <section class="settings-panel active" id="panel-store">
+            <div class="panel-header">
+                <h2>🏪 إعدادات المتجر</h2>
+                <p>المعلومات الأساسية للمتجر</p>
+            </div>
+            <form id="storeForm" class="settings-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="storeName">اسم المتجر <span class="required">*</span></label>
+                        <input type="text" id="storeName" placeholder="مثال: سوبر ماركت أبو كميل" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="storePhone">رقم الهاتف</label>
+                        <input type="tel" id="storePhone" placeholder="مثال: 0599000000">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="storeAddress">العنوان</label>
+                        <input type="text" id="storeAddress" placeholder="مثال: غزة - شارع الرشيد">
+                    </div>
+                    <div class="form-group">
+                        <label for="storeTaxNumber">الرقم الضريبي</label>
+                        <input type="text" id="storeTaxNumber" placeholder="اختياري">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="storeCurrency">العملة</label>
+                        <select id="storeCurrency">
+                            <option value="₪">₪ شيكل</option>
+                            <option value="$">$ دولار</option>
+                            <option value="د.أ">د.أ دينار أردني</option>
+                            <option value="ج.م">ج.م جنيه مصري</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="defaultDebtCeiling">سقف الدين الافتراضي للزبائن الجدد</label>
+                        <input type="number" id="defaultDebtCeiling" value="500" min="0" step="50">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">💾 حفظ إعدادات المتجر</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- =============================== -->
+        <!-- تبويب إعدادات الإيصال -->
+        <!-- =============================== -->
+        <section class="settings-panel" id="panel-receipt">
+            <div class="panel-header">
+                <h2>🧾 إعدادات الإيصال</h2>
+                <p>تخصيص رأس وتذييل إيصال الطباعة</p>
+            </div>
+            <form id="receiptForm" class="settings-form">
+                <div class="form-group">
+                    <label for="receiptHeader">رأس الإيصال (Header)</label>
+                    <textarea id="receiptHeader" rows="4" placeholder="مثلاً:&#10;سوبر ماركت أبو كميل&#10;غزة - فلسطين&#10;هاتف: 0599000000"></textarea>
+                    <span class="form-hint">سيظهر في أعلى كل إيصال مطبوع</span>
+                </div>
+                <div class="form-group">
+                    <label for="receiptFooter">تذييل الإيصال (Footer)</label>
+                    <textarea id="receiptFooter" rows="3" placeholder="مثلاً:&#10;شكراً لتسوقكم معنا&#10;نتمنى لكم يوماً سعيداً"></textarea>
+                    <span class="form-hint">سيظهر في أسفل كل إيصال مطبوع</span>
+                </div>
+
+                <!-- معاينة الإيصال -->
+                <div class="receipt-preview">
+                    <h4>📄 معاينة الإيصال</h4>
+                    <div class="receipt-paper">
+                        <div class="receipt-header-preview" id="receiptHeaderPreview">سوبر ماركت أبو كميل</div>
+                        <div class="receipt-divider">- - - - - - - - - - - - -</div>
+                        <div class="receipt-sample">
+                            <div class="receipt-line"><span>بيبسي 500مل × 2</span><span>6.00₪</span></div>
+                            <div class="receipt-line"><span>خبز عربي × 1</span><span>3.00₪</span></div>
+                            <div class="receipt-divider">- - - - - - - - - - - - -</div>
+                            <div class="receipt-line total"><span>الإجمالي</span><span>9.00₪</span></div>
+                            <div class="receipt-line"><span>الدفع: نقدي</span><span></span></div>
+                        </div>
+                        <div class="receipt-divider">- - - - - - - - - - - - -</div>
+                        <div class="receipt-footer-preview" id="receiptFooterPreview">شكراً لتسوقكم معنا</div>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">💾 حفظ إعدادات الإيصال</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- =============================== -->
+        <!-- تبويب الأمان -->
+        <!-- =============================== -->
+        <section class="settings-panel" id="panel-security">
+            <div class="panel-header">
+                <h2>🔒 الأمان</h2>
+                <p>تغيير كلمات المرور ورقم PIN المالك</p>
+            </div>
+
+            <!-- تغيير PIN المالك -->
+            <div class="security-section">
+                <h3>🔑 تغيير رقم PIN المالك</h3>
+                <p class="section-desc">رقم PIN مطلوب للموافقة على عمليات الدين</p>
+                <form id="pinForm" class="settings-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="currentPin">رقم PIN الحالي</label>
+                            <input type="password" id="currentPin" maxlength="6" placeholder="أدخل PIN الحالي">
+                        </div>
+                        <div class="form-group">
+                            <label for="newPin">رقم PIN الجديد</label>
+                            <input type="password" id="newPin" maxlength="6" placeholder="أدخل PIN الجديد (4-6 أرقام)">
+                        </div>
+                        <div class="form-group">
+                            <label for="confirmPin">تأكيد PIN الجديد</label>
+                            <input type="password" id="confirmPin" maxlength="6" placeholder="أعد إدخال PIN الجديد">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-warning">🔑 تغيير PIN</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- تغيير كلمة المرور -->
+            <div class="security-section">
+                <h3>🔐 تغيير كلمة المرور</h3>
+                <p class="section-desc">تغيير كلمة مرور حسابك الحالي</p>
+                <form id="passwordForm" class="settings-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="currentPassword">كلمة المرور الحالية</label>
+                            <input type="password" id="currentPassword" placeholder="أدخل كلمة المرور الحالية">
+                        </div>
+                        <div class="form-group">
+                            <label for="newPassword">كلمة المرور الجديدة</label>
+                            <input type="password" id="newPassword" placeholder="أدخل كلمة المرور الجديدة">
+                        </div>
+                        <div class="form-group">
+                            <label for="confirmPassword">تأكيد كلمة المرور</label>
+                            <input type="password" id="confirmPassword" placeholder="أعد إدخال كلمة المرور الجديدة">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">🔐 تغيير كلمة المرور</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- =============================== -->
+        <!-- تبويب إدارة المستخدمين -->
+        <!-- =============================== -->
+        <section class="settings-panel" id="panel-users">
+            <div class="panel-header">
+                <h2>👥 إدارة المستخدمين</h2>
+                <p>إضافة وتعديل وتفعيل/إلغاء المستخدمين</p>
+                <button class="btn btn-primary" id="btnAddUser">➕ إضافة مستخدم</button>
+            </div>
+
+            <div class="users-table-wrapper">
+                <table class="data-table" id="usersTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>اسم المستخدم</th>
+                            <th>الاسم الظاهر</th>
+                            <th>الدور</th>
+                            <th>الحالة</th>
+                            <th>تاريخ الإنشاء</th>
+                            <th>إجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- =============================== -->
+        <!-- تبويب النسخ الاحتياطي -->
+        <!-- =============================== -->
+        <section class="settings-panel" id="panel-backup">
+            <div class="panel-header">
+                <h2>💾 النسخ الاحتياطي</h2>
+                <p>إنشاء واستعادة نسخ احتياطية لقاعدة البيانات</p>
+            </div>
+
+            <div class="backup-grid">
+                <!-- إنشاء نسخة -->
+                <div class="backup-card">
+                    <div class="backup-icon">📦</div>
+                    <h3>إنشاء نسخة احتياطية</h3>
+                    <p>حفظ نسخة من قاعدة البيانات الحالية بجميع البيانات</p>
+                    <button class="btn btn-success" id="btnCreateBackup">📦 إنشاء نسخة الآن</button>
+                    <div class="backup-info" id="lastBackupInfo">
+                        <span>آخر نسخة: لم يتم بعد</span>
+                    </div>
+                </div>
+
+                <!-- استعادة نسخة -->
+                <div class="backup-card">
+                    <div class="backup-icon">🔄</div>
+                    <h3>استعادة نسخة احتياطية</h3>
+                    <p>استعادة قاعدة البيانات من نسخة احتياطية سابقة</p>
+                    <button class="btn btn-warning" id="btnRestoreBackup">🔄 استعادة نسخة</button>
+                    <input type="file" id="restoreFileInput" accept=".db,.sqlite,.backup" style="display:none;">
+                    <div class="backup-warning">
+                        ⚠️ الاستعادة ستستبدل جميع البيانات الحالية!
+                    </div>
+                </div>
+            </div>
+
+            <!-- معلومات قاعدة البيانات -->
+            <div class="db-info">
+                <h3>📊 معلومات قاعدة البيانات</h3>
+                <div class="db-stats">
+                    <div class="db-stat">
+                        <span class="db-stat-label">مسار القاعدة:</span>
+                        <span class="db-stat-value" id="dbPath">-</span>
+                    </div>
+                    <div class="db-stat">
+                        <span class="db-stat-label">عدد المنتجات:</span>
+                        <span class="db-stat-value" id="dbProducts">-</span>
+                    </div>
+                    <div class="db-stat">
+                        <span class="db-stat-label">عدد الزبائن:</span>
+                        <span class="db-stat-value" id="dbCustomers">-</span>
+                    </div>
+                    <div class="db-stat">
+                        <span class="db-stat-label">عدد الفواتير:</span>
+                        <span class="db-stat-value" id="dbInvoices">-</span>
+                    </div>
+                    <div class="db-stat">
+                        <span class="db-stat-label">الإصدار:</span>
+                        <span class="db-stat-value" id="dbVersion">v5.0</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- =============================== -->
+        <!-- تبويب سجل التدقيق -->
+        <!-- =============================== -->
+        <section class="settings-panel" id="panel-audit">
+            <div class="panel-header">
+                <h2>📋 سجل التدقيق</h2>
+                <p>جميع العمليات المسجلة على النظام</p>
+            </div>
+
+            <div class="audit-filters">
+                <div class="form-group">
+                    <input type="text" id="auditSearch" placeholder="🔍 ابحث في السجل...">
+                </div>
+                <div class="form-group">
+                    <select id="auditFilter">
+                        <option value="all">كل العمليات</option>
+                        <option value="login">تسجيل دخول/خروج</option>
+                        <option value="invoice">الفواتير</option>
+                        <option value="payment">المدفوعات</option>
+                        <option value="customer">الزبائن</option>
+                        <option value="product">المنتجات</option>
+                        <option value="transfer">التحويلات</option>
+                        <option value="settings">الإعدادات</option>
+                    </select>
+                </div>
+                <button class="btn btn-outline btn-sm" id="btnRefreshAudit">🔄 تحديث</button>
+            </div>
+
+            <div class="audit-table-wrapper">
+                <table class="data-table" id="auditTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>المستخدم</th>
+                            <th>العملية</th>
+                            <th>التفاصيل</th>
+                            <th>الجدول</th>
+                            <th>التاريخ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auditTableBody">
+                    </tbody>
+                </table>
+                <div id="noAudit" class="empty-state" style="display:none;">
+                    <span class="empty-icon">📋</span>
+                    <p>لا توجد سجلات بعد</p>
+                </div>
+            </div>
+
+            <div class="audit-pagination" id="auditPagination">
+                <button class="btn btn-sm btn-outline" id="btnAuditPrev" disabled>→ السابق</button>
+                <span id="auditPageInfo">صفحة 1</span>
+                <button class="btn btn-sm btn-outline" id="btnAuditNext">التالي ←</button>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ===== مودال إضافة/تعديل مستخدم ===== -->
+    <div class="modal-overlay" id="userModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="userModalTitle">➕ إضافة مستخدم جديد</h3>
+                <button class="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="userForm">
+                    <div class="form-group">
+                        <label for="userUsername">اسم المستخدم <span class="required">*</span></label>
+                        <input type="text" id="userUsername" placeholder="مثال: cashier2" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="userDisplayName">الاسم الظاهر <span class="required">*</span></label>
+                        <input type="text" id="userDisplayName" placeholder="مثال: محمد الكاشير" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="userPassword">كلمة المرور <span class="required" id="passwordRequired">*</span></label>
+                        <input type="password" id="userPassword" placeholder="أدخل كلمة المرور">
+                        <span class="form-hint" id="passwordHint" style="display:none;">اتركها فارغة للإبقاء على كلمة المرور الحالية</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="userRole">الدور</label>
+                        <select id="userRole">
+                            <option value="cashier">كاشير</option>
+                            <option value="admin">مدير</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="userPin">رقم PIN (اختياري)</label>
+                        <input type="password" id="userPin" maxlength="6" placeholder="رقم PIN للعمليات الحساسة">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="btnSaveUser">💾 حفظ</button>
+                <button class="btn btn-outline btn-close-modal">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../scripts/settings.js"></script>
+</body>
+</html>

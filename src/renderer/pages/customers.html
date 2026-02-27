@@ -1,0 +1,372 @@
+﻿<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self';">
+    <title>إدارة الزبائن - أبو كميل POS</title>
+    <link rel="stylesheet" href="../styles/customers.css">
+</head>
+<body>
+    <!-- ========== الشريط الجانبي ========== -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>أبو كميل POS</h2>
+            <span class="version">v4.0</span>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span><span>الرئيسية</span>
+            </a>
+            <a href="invoice.html" class="nav-item">
+                <span class="nav-icon">🧾</span>
+                <span>فاتورة جديدة</span>
+            </a>
+            <a href="customers.html" class="nav-item active">
+                <span class="nav-icon">👥</span>
+                <span>الزبائن</span>
+            </a>
+            <a href="products.html" class="nav-item">
+                <span class="nav-icon">📦</span>
+                <span>المنتجات</span>
+            </a>
+            <a href="debts.html" class="nav-item">
+                <span class="nav-icon">💰</span>
+                <span>الأرصدة والديون</span>
+            </a>
+            <a href="reports.html" class="nav-item">
+                <span class="nav-icon">📊</span>
+                <span>التقارير</span>
+            </a>
+            <a href="settings.html" class="nav-item">
+                <span class="nav-icon">⚙️</span>
+                <span>الإعدادات</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <span class="user-icon">👤</span>
+                <span id="currentUser">المدير</span>
+            </div>
+            <button id="btnLogout" class="btn-logout">تسجيل خروج</button>
+        </div>
+    </aside>
+
+    <!-- ========== المحتوى الرئيسي ========== -->
+    <main class="main-content">
+        <!-- شريط علوي -->
+        <header class="top-bar">
+            <div class="page-title">
+                <h1>👥 إدارة الزبائن</h1>
+                <p class="subtitle">إضافة وتعديل ومتابعة بيانات الزبائن</p>
+            </div>
+            <div class="top-bar-actions">
+                <div class="search-box">
+                    <input type="text" id="searchCustomer" placeholder="🔍 ابحث باسم أو رقم هاتف..." autocomplete="off">
+                </div>
+                <button id="btnAddCustomer" class="btn btn-primary">
+                    <span>➕</span> زبون جديد
+                </button>
+            </div>
+        </header>
+
+        <!-- إحصائيات سريعة -->
+        <section class="stats-bar">
+            <div class="stat-card">
+                <div class="stat-icon">👥</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalCustomers">0</span>
+                    <span class="stat-label">إجمالي الزبائن</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statActiveCustomers">0</span>
+                    <span class="stat-label">زبائن نشطين</span>
+                </div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-icon">💰</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalDebts">0 ₪</span>
+                    <span class="stat-label">إجمالي الديون</span>
+                </div>
+            </div>
+            <div class="stat-card danger">
+                <div class="stat-icon">🚫</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statBlacklisted">0</span>
+                    <span class="stat-label">قائمة سوداء</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- فلاتر -->
+        <section class="filters-bar">
+            <button class="filter-btn active" data-filter="all">الكل</button>
+            <button class="filter-btn" data-filter="active">نشطين</button>
+            <button class="filter-btn" data-filter="has_debt">عليهم ديون</button>
+            <button class="filter-btn" data-filter="near_ceiling">قريبين من السقف</button>
+            <button class="filter-btn" data-filter="blacklisted">قائمة سوداء</button>
+            <div class="sort-box">
+                <select id="sortCustomers">
+                    <option value="name_asc">الاسم (أ-ي)</option>
+                    <option value="name_desc">الاسم (ي-أ)</option>
+                    <option value="debt_high">الأعلى ديون</option>
+                    <option value="debt_low">الأقل ديون</option>
+                    <option value="recent">الأحدث</option>
+                </select>
+            </div>
+        </section>
+
+        <!-- جدول الزبائن -->
+        <section class="customers-table-wrapper">
+            <table class="customers-table" id="customersTable">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>الاسم</th>
+                        <th>الهاتف</th>
+                        <th>النوع</th>
+                        <th>سقف الدين</th>
+                        <th>الدين الحالي</th>
+                        <th>نسبة الاستخدام</th>
+                        <th>الحالة</th>
+                        <th>إجراءات</th>
+                    </tr>
+                </thead>
+                <tbody id="customersTableBody">
+                    <!-- يتم ملؤه من JavaScript -->
+                </tbody>
+            </table>
+            <div id="noCustomers" class="empty-state" style="display:none;">
+                <span class="empty-icon">👥</span>
+                <p>لا يوجد زبائن</p>
+                <button class="btn btn-primary" id="btnAddFirstCustomer">إضافة أول زبون</button>
+            </div>
+        </section>
+    </main>
+
+    <!-- ========== مودال إضافة/تعديل زبون ========== -->
+    <div class="modal-overlay" id="customerModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">إضافة زبون جديد</h3>
+                <button class="modal-close" id="btnCloseModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="customerForm">
+                    <input type="hidden" id="customerId">
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="customerName">اسم الزبون <span class="required">*</span></label>
+                            <input type="text" id="customerName" placeholder="مثال: أحمد محمد" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="customerPhone">رقم الهاتف</label>
+                            <input type="text" id="customerPhone" placeholder="مثال: 0599123456">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="customerType">نوع الزبون</label>
+                            <select id="customerType">
+                                <option value="regular">عادي</option>
+                                <option value="wholesale">جملة</option>
+                                <option value="vip">VIP</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="debtCeiling">سقف الدين (₪)</label>
+                            <input type="number" id="debtCeiling" value="500" min="0" step="50">
+                            <small class="hint">0 = لا يُسمح بالدين | مبلغ عالي = حرية بدون تنبيهات</small>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="customerAddress">العنوان</label>
+                        <input type="text" id="customerAddress" placeholder="مثال: غزة - تل الهوا">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="customerNotes">ملاحظات</label>
+                        <textarea id="customerNotes" rows="3" placeholder="أي ملاحظات عن الزبون..."></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="customerBlacklist">
+                                <span>إضافة للقائمة السوداء 🚫</span>
+                            </label>
+                            <small class="hint">الزبون بالقائمة السوداء لا يمكنه الشراء بالدين</small>
+                        </div>
+                    </div>
+
+                    <div id="blacklistReason" class="form-group" style="display:none;">
+                        <label for="blacklistReasonText">سبب الإضافة للقائمة السوداء</label>
+                        <input type="text" id="blacklistReasonText" placeholder="مثال: تأخر بالدفع أكثر من مرة">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelModal">إلغاء</button>
+                <button class="btn btn-primary" id="btnSaveCustomer">💾 حفظ الزبون</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== مودال تفاصيل الزبون ========== -->
+    <div class="modal-overlay" id="customerDetailsModal">
+        <div class="modal modal-large">
+            <div class="modal-header">
+                <h3 id="detailsModalTitle">تفاصيل الزبون</h3>
+                <button class="modal-close" id="btnCloseDetails">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="customer-profile">
+                    <div class="profile-header">
+                        <div class="profile-avatar" id="detailAvatar">أ</div>
+                        <div class="profile-info">
+                            <h2 id="detailName">-</h2>
+                            <p id="detailPhone">-</p>
+                            <p id="detailAddress">-</p>
+                            <span class="badge" id="detailType">عادي</span>
+                            <span class="badge" id="detailStatus">نشط</span>
+                        </div>
+                        <div class="profile-debt-summary">
+                            <div class="debt-circle" id="debtCircle">
+                                <svg viewBox="0 0 36 36" class="circular-chart">
+                                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="circle" id="debtArc" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <text x="18" y="18" class="percentage" id="debtPercentText">0%</text>
+                                    <text x="18" y="23" class="percentage-label">من السقف</text>
+                                </svg>
+                            </div>
+                            <div class="debt-numbers">
+                                <p>الدين: <strong id="detailCurrentDebt">0 ₪</strong></p>
+                                <p>السقف: <strong id="detailCeiling">0 ₪</strong></p>
+                                <p>المتبقي: <strong id="detailRemaining">0 ₪</strong></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- تبويبات -->
+                <div class="detail-tabs">
+                    <button class="tab-btn active" data-tab="invoices">🧾 الفواتير</button>
+                    <button class="tab-btn" data-tab="debts">💰 الديون</button>
+                    <button class="tab-btn" data-tab="payments">💳 المدفوعات</button>
+                </div>
+
+                <div class="tab-content active" id="tab-invoices">
+                    <table class="detail-table">
+                        <thead>
+                            <tr>
+                                <th>رقم الفاتورة</th>
+                                <th>التاريخ</th>
+                                <th>المبلغ</th>
+                                <th>طريقة الدفع</th>
+                                <th>الحالة</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailInvoicesBody">
+                        </tbody>
+                    </table>
+                    <p class="empty-tab" id="noInvoices" style="display:none;">لا توجد فواتير</p>
+                </div>
+
+                <div class="tab-content" id="tab-debts">
+                    <table class="detail-table">
+                        <thead>
+                            <tr>
+                                <th>رقم الفاتورة</th>
+                                <th>التاريخ</th>
+                                <th>المبلغ</th>
+                                <th>السبب</th>
+                                <th>الحالة</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailDebtsBody">
+                        </tbody>
+                    </table>
+                    <p class="empty-tab" id="noDebts" style="display:none;">لا توجد ديون</p>
+                </div>
+
+                <div class="tab-content" id="tab-payments">
+                    <table class="detail-table">
+                        <thead>
+                            <tr>
+                                <th>التاريخ</th>
+                                <th>المبلغ</th>
+                                <th>الطريقة</th>
+                                <th>ملاحظات</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailPaymentsBody">
+                        </tbody>
+                    </table>
+                    <p class="empty-tab" id="noPayments" style="display:none;">لا توجد مدفوعات</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCloseDetailsFooter">إغلاق</button>
+                <button class="btn btn-warning" id="btnEditFromDetails">✏️ تعديل</button>
+                <button class="btn btn-success" id="btnPayDebt">💵 سداد دين</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== مودال سداد دين ========== -->
+    <div class="modal-overlay" id="payDebtModal">
+        <div class="modal modal-small">
+            <div class="modal-header">
+                <h3>💵 سداد دين</h3>
+                <button class="modal-close" id="btnClosePayDebt">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="pay-debt-info">
+                    <p>الزبون: <strong id="payDebtCustomerName">-</strong></p>
+                    <p>الدين الحالي: <strong id="payDebtCurrentAmount">0 ₪</strong></p>
+                </div>
+                <div class="form-group">
+                    <label for="payAmount">المبلغ المدفوع (₪)</label>
+                    <input type="number" id="payAmount" min="1" step="1" placeholder="أدخل المبلغ">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="payMethod">طريقة الدفع</label>
+                        <select id="payMethod">
+                            <option value="cash">نقداً</option>
+                            <option value="transfer">تحويل بنكي</option>
+                            <option value="wallet">PalPay</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="payNotes">ملاحظات</label>
+                    <input type="text" id="payNotes" placeholder="اختياري">
+                </div>
+                <div class="quick-amounts">
+                    <button class="quick-btn" data-amount="50">50 ₪</button>
+                    <button class="quick-btn" data-amount="100">100 ₪</button>
+                    <button class="quick-btn" data-amount="200">200 ₪</button>
+                    <button class="quick-btn" data-amount="full">كامل المبلغ</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelPayDebt">إلغاء</button>
+                <button class="btn btn-success" id="btnConfirmPayDebt">✅ تأكيد السداد</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== تنبيهات ========== -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../scripts/customers.js"></script>
+</body>
+</html>

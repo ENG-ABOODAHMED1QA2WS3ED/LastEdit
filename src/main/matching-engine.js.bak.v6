@@ -1,0 +1,556 @@
+﻿const NameNormalizer = require('./name-normalizer');
+const ScoringEngine = require('./scoring-engine');
+
+class MatchingEngine {
+  constructor(db) {
+    this.db = db;
+    this.config = this.loadConfig();
+    // Force thresholds
+    try { this.db.prepare("UPDATE matching_config SET value='45' WHERE key='suggestion_threshold'").run(); } catch(e) {}
+    try { this.db.prepare("UPDATE matching_config SET value='0.5' WHERE key='min_name_similarity'").run(); } catch(e) {}
+    this.config = this.loadConfig(); // reload
+
+    // OVERRIDE: Force thresholds for better matching
+    this.config.suggestion_threshold = '45';
+    this.config.min_name_similarity = '0.5';
+    this.config.auto_confirm_threshold = '85';
+    console.log('CONFIG OVERRIDE APPLIED:', JSON.stringify(this.config));
+
+    // OVERRIDE: Force thresholds for better matching
+    this.config.suggestion_threshold = '45';
+    this.config.min_name_similarity = '0.5';
+    this.config.auto_confirm_threshold = '85';
+    console.log('CONFIG OVERRIDE APPLIED:', JSON.stringify(this.config));
+    this.scorer = new ScoringEngine(this.config);
+  }
+
+  loadConfig() {
+    try {
+      const rows = this.db.prepare('SELECT key, value FROM matching_config').all();
+      const cfg = {};
+      rows.forEach(r => cfg[r.key] = r.value);
+      return cfg;
+    } catch(e) {
+      return {
+        auto_confirm_threshold: '90', suggestion_threshold: '45',
+        amount_tolerance_percent: '1', amount_tolerance_fixed: '2',
+        date_tolerance_days: '3', min_name_similarity: '0.5',
+        auto_learn_aliases: '1'
+      };
+    }
+  }
+
+  extractSenderName(desc) {
+    if (!desc) return '';
+    const patterns = [
+      /لصديق\s+من\s+(.+?)(?:\s+الى|\s+إلى|\s*$)/i,
+      /للاخرين\s+من\s+(.+?)(?:\s+الى|\s+إلى|\s*$)/i,
+      /تحويل\s+(?:من|لـ?)\s+(.+?)(?:\s+الى|\s+إلى|\s*$)/i,
+      /من\s+(.+?)(?:\s+الى|\s+إلى|\s*$)/i,
+      /from\s+(.+?)(?:\s+to|\s*$)/i
+    ];
+    for (const p of patterns) {
+      const m = desc.match(p);
+      if (m && m[1]) {
+        let name = m[1].trim();
+        name = name.replace(/\s*-\s*WALLET.*/i, '');
+        name = name.replace(/\s*\/\s*\d+/g, '');
+        name = name.replace(/\s*\/\s*$/g, '');
+        name = name.replace(/\s+/g, ' ').trim();
+        return name;
+      }
+    }
+    // Fallback: desc itself is the name (pre-parsed from BOP CSV)
+    let fallback = desc.trim();
+    fallback = fallback.replace(/^(تحويل الكتروني موبايل:|الدفع لصديق|الدفع للاخرين|e-payment|payment)/i, '').trim();
+    fallback = fallback.replace(/\s*-\s*WALLET.*/i, '');
+    fallback = fallback.replace(/\s*\/\s*\d+/g, '');
+    fallback = fallback.replace(/\s+/g, ' ').trim();
+    if (fallback.length >= 2 && !/^[\d.]+$/.test(fallback)) return fallback;
+    return '';
+  }
+
+  detectTransferType(desc) {
+    if (!desc) return 'unknown';
+    const d = desc.toLowerCase();
+    if (d.includes('wallet')) return 'e_wallet';
+    if (d.includes('تحويل') || d.includes('حوالة')) return 'bank_transfer';
+    return 'other';
+  }
+
+  extractReference(desc) {
+    if (!desc) return null;
+    const m = desc.match(/\/(\d{6,})\//);
+    return m ? m[1] : null;
+  }
+
+  parseDate(dateStr) {
+    if (!dateStr) return null;
+    try {
+      const parts = dateStr.split('/');
+      if (parts.length === 3) {
+        return parts[2] + '-' + parts[0].padStart(2,'0') + '-' + parts[1].padStart(2,'0');
+      }
+      return dateStr;
+    } catch(e) { return null; }
+  }
+
+  generateBatchId() {
+    return 'batch_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+  }
+
+  importBankStatement(entries, headers, fileName) {
+    const batchId = this.generateBatchId();
+    let imported = 0, skipped = 0;
+
+    console.log('=== محرك الاستيراد ===');
+    console.log('استلمت', entries.length, 'عملية');
+
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO bank_transactions (raw_date, raw_description, raw_amount, parsed_date, parsed_name, normalized_name, amount, direction, transfer_type, reference_number, import_batch_id, import_date, file_name, row_number, match_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?,?,?)"
+    );
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const desc = e.description || '';
+      const amount = parseFloat(e.amount);
+      const dateStr = e.date || '';
+
+      if (!amount || amount <= 0) { skipped++; continue; }
+
+      const parsedName = this.extractSenderName(desc);
+      const normalizedName = NameNormalizer.normalize(parsedName);
+      const transferType = this.detectTransferType(desc);
+      const reference = this.extractReference(desc);
+      const parsedDate = this.parseDate(dateStr);
+
+      console.log('  ->', parsedName, '|', amount, 'NIS');
+
+      try {
+        insert.run(dateStr, desc, amount.toString(), parsedDate, parsedName, normalizedName, amount, 'incoming', transferType, reference, batchId, fileName || '', i+1, 'pending');
+        imported++;
+      } catch(err) { console.error('insert error:', err.message); skipped++; }
+    }
+
+    console.log('استيراد:', imported, '| تخطي:', skipped);
+    return { success: true, batchId, imported, skipped };
+  }
+
+  runMatching(batchId) {
+    console.log('=== بدء المطابقة ===');
+
+    let bankQuery = "SELECT * FROM bank_transactions WHERE direction='incoming' AND match_status='pending'";
+    if (batchId) bankQuery += " AND import_batch_id='" + batchId + "'";
+    const bankTxns = this.db.prepare(bankQuery).all();
+
+    // Fix: populate parsed_name from raw_description if empty
+    for (const bt of bankTxns) {
+      if (!bt.parsed_name && bt.raw_description) {
+        bt.parsed_name = this.extractSenderName(bt.raw_description);
+        if (!bt.parsed_name) bt.parsed_name = bt.raw_description;
+      }
+    }
+
+    console.log('عمليات بنكية:', bankTxns.length);
+
+    const pendingPayments = this.db.prepare(
+      "SELECT p.id as payment_id, p.invoice_id, p.method, p.status, p.amount, p.transfer_type, i.customer_id, c.name as customer_name, p.alt_account_name, c.alt_account_name as customer_alt_name FROM payments p JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customers c ON c.id = i.customer_id WHERE (p.method = 'transfer' AND p.status IN ('awaiting_transfer','pending','pending_match')) OR (p.method = 'debt' AND p.status = 'pending')"
+    ).all();
+    console.log('دفعات معلقة:', pendingPayments.length);
+
+    if (bankTxns.length === 0 || pendingPayments.length === 0) {
+      return { success: true, auto_confirmed: [], suggested: [], unmatched_bank: bankTxns, unmatched_payments: pendingPayments, summary: { total_bank: bankTxns.length, total_payments: pendingPayments.length, auto_confirmed: 0, suggested: 0, unmatched_bank: bankTxns.length, unmatched_payments: pendingPayments.length } };
+    }
+
+    // تجميع حسب الزبون
+    const customerGroups = {};
+    for (const p of pendingPayments) {
+      const cid = p.customer_id || 'unknown';
+      if (!customerGroups[cid]) {
+        customerGroups[cid] = { customer_id: p.customer_id, customer_name: p.customer_name || '', alt_name: p.alt_account_name || p.customer_alt_name || '', payments: [], transferTotal: 0, debtOnlyTotal: 0 };
+      }
+      customerGroups[cid].payments.push(p);
+    }
+
+    // حساب المجاميع
+    for (const cid in customerGroups) {
+      const g = customerGroups[cid];
+      let transferTotal = 0;
+      const invoicesWithTransfer = new Set();
+
+      for (const p of g.payments) {
+        if (p.method === 'transfer') {
+          transferTotal += p.amount;
+          invoicesWithTransfer.add(p.invoice_id);
+        }
+      }
+
+      let debtOnlyTotal = 0;
+      for (const p of g.payments) {
+        if (p.method === 'debt' && !invoicesWithTransfer.has(p.invoice_id)) {
+          debtOnlyTotal += p.amount;
+        }
+      }
+
+      g.transferTotal = transferTotal;
+      g.debtOnlyTotal = debtOnlyTotal;
+      g.realTotal = transferTotal + debtOnlyTotal;
+
+      console.log('زبون:', g.customer_name, '| تحويلات:', transferTotal, '| ديون مستقلة:', debtOnlyTotal, '| مجموع حقيقي:', g.realTotal);
+    }
+
+    // جلب الاسماء البديلة
+    let aliases = {};
+    try {
+      const aliasRows = this.db.prepare('SELECT customer_id, alias_name FROM customer_aliases').all();
+      console.log('aliases loaded:', aliasRows.length);
+      for (const a of aliasRows) {
+        if (!aliases[a.customer_id]) aliases[a.customer_id] = [];
+        aliases[a.customer_id].push(a.alias_name);
+      }
+    } catch(e) { console.error('alias error:', e.message); }
+
+    const tolerance = parseFloat(this.config.amount_tolerance_fixed || '2');
+    const minSim = parseFloat(this.config.min_name_similarity || '0.6');
+    const autoThreshold = parseFloat(this.config.auto_confirm_threshold || '90');
+    const suggestThreshold = parseFloat(this.config.suggestion_threshold || '60');
+
+    const usedBank = new Set();
+    const autoConfirmed = [];
+    let suggested = [];
+
+    for (const cid in customerGroups) {
+      const group = customerGroups[cid];
+      const allNames = [group.customer_name, group.alt_name, ...(aliases[group.customer_id] || [])].filter(Boolean);
+
+      console.log('--- مطابقة:', group.customer_name, '| اسماء:', allNames.length);
+
+      // المجاميع المختلفة اللي ممكن نطابقها
+      const possibleAmounts = new Set();
+      
+      // كل تحويل فردي
+      for (const p of group.payments) {
+        if (p.method === 'transfer') possibleAmounts.add(p.amount);
+      }
+      // مجموع التحويلات
+      if (group.transferTotal > 0) possibleAmounts.add(group.transferTotal);
+      // المجموع الحقيقي (تحويلات + ديون مستقلة)
+      if (group.realTotal > 0 && group.realTotal !== group.transferTotal) possibleAmounts.add(group.realTotal);
+
+      console.log('  مبالغ ممكنة:', [...possibleAmounts]);
+
+      for (const bt of bankTxns) {
+        if (usedBank.has(bt.id)) continue;
+
+        // فحص الاسم اولا
+        const bankName = bt.parsed_name || bt.raw_description || '';
+        const bestSim = NameNormalizer.bestMatch(bankName, group.customer_name, group.alt_name, aliases[group.customer_id] || []); console.log("  SIM:", bankName.substring(0,30), "vs", group.customer_name, "=", bestSim.toFixed(2));
+
+        if (bestSim < minSim) continue;
+
+        console.log('  اسم متشابه:', bankName, '<->', group.customer_name, '=', bestSim.toFixed(2));
+
+        // فحص المبلغ
+        let matchedAmount = null;
+        let matchType = null;
+
+        for (const amt of possibleAmounts) {
+          if (Math.abs(bt.amount - amt) <= tolerance) {
+            matchedAmount = amt;
+            if (amt === group.realTotal && group.debtOnlyTotal > 0) matchType = 'combined';
+            else if (amt === group.transferTotal && group.payments.filter(p => p.method === 'transfer').length > 1) matchType = 'aggregate';
+            else matchType = 'individual';
+            break;
+          }
+        }
+
+        if (!matchedAmount) {
+          // اسم متطابق لكن مبلغ مختلف - نعرضه كاقتراح بنقاط أقل
+          if (bestSim >= 0.5) {
+            const closestAmount = [...possibleAmounts].sort((a,b) => Math.abs(bt.amount-a) - Math.abs(bt.amount-b))[0];
+            if (closestAmount) {
+              matchedAmount = closestAmount;
+              matchType = "individual";
+              console.log("  تطابق اسم بدون مبلغ:", bt.amount, "vs", closestAmount);
+            } else { continue; }
+          } else { continue; }
+        }
+
+        console.log("  تطابق مبلغ!", bt.amount, "~=", matchedAmount, "| نوع:", matchType);
+
+        // حساب النقاط
+        const amountDiff = Math.abs(bt.amount - matchedAmount);
+        const score = this.calcScore(amountDiff, matchedAmount, bestSim); console.log("  SCORE:", score, "| amountDiff:", amountDiff, "| nameSim:", bestSim.toFixed(2));
+
+        // تحديد الدفعات المرتبطة
+        let relatedPayments;
+        if (matchType === "individual") {
+          // نبحث عن أقرب دفعة للمبلغ البنكي
+          relatedPayments = group.payments.filter(p => p.method === "transfer" || p.method === "debt").sort((a,b) => Math.abs(bt.amount-a.amount) - Math.abs(bt.amount-b.amount)).slice(0, 1);
+        } else {
+          relatedPayments = group.payments;
+        }
+
+        const match = { bankTxn: bt, payments: relatedPayments, score, nameScore: bestSim, type: matchType, totalAmount: matchedAmount };
+
+        if (score >= autoThreshold) {
+          autoConfirmed.push(match);
+          usedBank.add(bt.id);
+          console.log('  >> تأكيد تلقائي! نقاط:', score);
+        } else if (score >= suggestThreshold) {
+          suggested.push(match);
+          usedBank.add(bt.id);
+          console.log('  >> اقتراح! نقاط:', score);
+        }
+      }
+    }
+
+
+    // === فلتر: أفضل اقتراح واحد لكل ذمة ===
+    const bestByPayment = new Map();
+    for (const s of suggested) {
+      for (const p of s.payments) {
+        const key = p.payment_id;
+        if (!bestByPayment.has(key) || s.score > bestByPayment.get(key).score) {
+          bestByPayment.set(key, s);
+        }
+      }
+    }
+    // أيضا: أفضل اقتراح واحد لكل عملية بنكية
+    const bestByBank = new Map();
+    for (const s of bestByPayment.values()) {
+      const key = s.bankTxn.id;
+      if (!bestByBank.has(key) || s.score > bestByBank.get(key).score) {
+        bestByBank.set(key, s);
+      }
+    }
+    suggested = [...bestByBank.values()];
+    // نعيد بناء usedBank
+    usedBank.clear();
+    for (const m of [...autoConfirmed, ...suggested]) { usedBank.add(m.bankTxn.id); }
+    console.log('بعد الفلتر:', suggested.length, 'اقتراحات');
+
+    const unmatchedBank = bankTxns.filter(b => !usedBank.has(b.id));
+    const matchedPaymentIds = new Set();
+    [...autoConfirmed, ...suggested].forEach(m => m.payments.forEach(p => matchedPaymentIds.add(p.payment_id)));
+    const unmatchedPayments = pendingPayments.filter(p => !matchedPaymentIds.has(p.payment_id));
+
+    this.saveAttempts(autoConfirmed, 'auto_confirmed');
+    this.saveAttempts(suggested, 'suggested');
+    this.autoConfirm(autoConfirmed);
+
+    const result = {
+      success: true,
+      auto_confirmed: autoConfirmed.map(m => this.formatMatch(m)),
+      suggested: suggested.map(m => this.formatMatch(m)),
+      unmatched_bank: unmatchedBank,
+      unmatched_payments: unmatchedPayments,
+      summary: { total_bank: bankTxns.length, total_payments: pendingPayments.length, auto_confirmed: autoConfirmed.length, suggested: suggested.length, unmatched_bank: unmatchedBank.length, unmatched_payments: unmatchedPayments.length }
+    };
+
+    console.log('=== نتائج ===', JSON.stringify(result.summary));
+    return result;
+  }
+
+  calcScore(amountDiff, expectedAmount, nameSim) {
+    let score = 0;
+    // نقاط المبلغ - تدريجية حسب القرب
+    if (amountDiff === 0) score += 40;
+    else if (amountDiff <= 2) score += 36;
+    else if (amountDiff <= 5) score += 30;
+    else if (amountDiff <= 10) score += 25;
+    else if (amountDiff <= 20) score += 20;
+    else if (amountDiff <= 50) score += 15;
+    else if (amountDiff <= 100) score += 10;
+    else score += Math.max(2, 10 - Math.floor(amountDiff / 50));
+    score += Math.min(30, nameSim * 30);
+    score += 10; // date base
+    score += 5;  // ref base
+    return Math.round(score);
+  }
+
+  formatMatch(m) {
+    return {
+      bank_transaction: { id: m.bankTxn.id, name: m.bankTxn.parsed_name, amount: m.bankTxn.amount, date: m.bankTxn.parsed_date || m.bankTxn.raw_date },
+      payments: m.payments.map(p => ({ id: p.payment_id, amount: p.amount, method: p.method, customer: p.customer_name, invoice_id: p.invoice_id })),
+      score: m.score, nameScore: m.nameScore, type: m.type, totalAmount: m.totalAmount
+    };
+  }
+
+  saveAttempts(matches, level) {
+    const insert = this.db.prepare("INSERT OR IGNORE INTO matching_attempts (bank_transaction_id, payment_id, score, match_level, decision, created_at) VALUES (?,?,?,?,?,datetime('now','localtime'))");
+    for (const m of matches) {
+      for (const p of m.payments) {
+        try { insert.run(m.bankTxn.id, p.payment_id, m.score, level, level === 'auto_confirmed' ? 'accepted' : 'pending'); } catch(e) {}
+      }
+    }
+  }
+
+  autoConfirm(matches) {
+    const updatePayment = this.db.prepare("UPDATE payments SET status='confirmed' WHERE id=?");
+    const updateBank = this.db.prepare("UPDATE bank_transactions SET match_status='matched_auto' WHERE id=?");
+
+    for (const m of matches) {
+      try {
+        const payTotal = m.payments.reduce((s, p) => s + p.amount, 0);
+        if (Math.abs(m.bankTxn.amount - payTotal) > 0.01) { console.error('auto skip: amount mismatch bank=' + m.bankTxn.amount + ' payments=' + payTotal); continue; }
+        updateBank.run(m.bankTxn.id);
+        for (const p of m.payments) {
+          if (p.method === 'transfer') {
+            updatePayment.run(p.payment_id);
+          }
+        }
+        if (m.payments[0] && m.payments[0].customer_id) {
+          this.learnAlias(m.payments[0].customer_id, m.bankTxn.parsed_name);
+        }
+      } catch(e) { console.error('confirm error:', e.message); }
+    }
+  }
+
+  acceptSuggestion(bankTxnId, paymentIds) {
+    try { console.log("ACCEPT START bankTxnId:", bankTxnId, "paymentIds:", paymentIds);
+      const bt_check = this.db.prepare('SELECT amount FROM bank_transactions WHERE id=?').get(bankTxnId);
+      if (!bt_check) return { success: false, error: "bank tx not found" }; console.log("ACCEPT bt_check OK amount:", bt_check.amount);
+      const bankAmount = bt_check.amount;
+
+      const payments = paymentIds.map(pid => {
+        const p = this.db.prepare('SELECT id, amount, method, status, invoice_id FROM payments WHERE id=?').get(pid);
+        return p;
+      }).filter(p => p);
+
+      if (payments.length === 0) return { success: false, error: "no valid payments" }; console.log("ACCEPT payments OK count:", payments.length, "sum:", payments.reduce((s,p)=>s+p.amount,0));
+
+      const payments_sum = payments.reduce((sum, p) => sum + p.amount, 0);
+
+      // block: bank amount > debts total (overflow not supported)
+      // overflow: bank > debts - pay only up to debts total
+      const effectiveAmount = Math.min(bankAmount, payments_sum);
+      // remaining surplus stays unresolved
+
+      console.log("ACCEPT starting txn..."); const txn = this.db.transaction(() => {
+        this.db.prepare("UPDATE bank_transactions SET match_status='matched_manual' WHERE id=?").run(bankTxnId); console.log("STEP1 OK");
+        const bt = this.db.prepare('SELECT * FROM bank_transactions WHERE id=?').get(bankTxnId); console.log("STEP2 OK bt:", bt?.id);
+
+        let remaining = effectiveAmount;
+
+        for (const payment of payments) {
+          if (remaining <= 0.01) break;
+
+          if (remaining >= payment.amount - 0.01) {
+            // full payment
+            console.log("STEP3 full payment pid:", payment.id); this.db.prepare("UPDATE payments SET status='confirmed' WHERE id=?").run(payment.id);
+            remaining -= payment.amount;
+          } else {
+            // partial: split payment
+            const unpaid = payment.amount - remaining;
+            console.log("STEP4 partial pid:", payment.id, "remaining:", remaining); this.db.prepare("UPDATE payments SET amount=?, status='confirmed', notes=COALESCE(notes,'') || ? WHERE id=?").run(
+              remaining,
+              ' | partial: ' + remaining + ' of ' + payment.amount,
+              payment.id
+            );
+            this.db.prepare("INSERT INTO payments (invoice_id, amount, method, status, notes, created_at) VALUES (?,?,?,?,?,datetime('now','localtime'))").run(
+              payment.invoice_id,
+              unpaid,
+              payment.method,
+              payment.status,
+              'remainder from payment #' + payment.id + ' after partial ' + remaining
+            );
+            remaining = 0;
+          }
+
+          console.log("STEP5 attempt bankTxnId:", bankTxnId, "pid:", payment.id); this.db.prepare("INSERT OR REPLACE INTO matching_attempts (bank_transaction_id, payment_id, score, match_level, decision, decided_by, decision_date) VALUES (?,?,100,'manual','accepted','user',datetime('now','localtime'))").run(bankTxnId, payment.id);
+        }
+
+        const first = this.db.prepare('SELECT i.customer_id FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.id=?').get(paymentIds[0]);
+        if (first && bt) this.learnAlias(first.customer_id, bt.parsed_name);
+      });
+
+      txn();
+
+      const invoiceIds = [...new Set(payments.map(p => p.invoice_id).filter(id => id))];
+      return { success: true, invoiceIds: invoiceIds };
+    } catch(e) { return { success: false, error: e.message }; }
+  }
+
+  rejectSuggestion(bankTxnId, paymentIds) {
+    try {
+      for (const pid of paymentIds) {
+        this.db.prepare("UPDATE matching_attempts SET decision='rejected', decided_by='user' WHERE bank_transaction_id=? AND payment_id=?").run(bankTxnId, pid);
+      }
+      this.db.prepare("UPDATE bank_transactions SET match_status='ignored' WHERE id=?").run(bankTxnId);
+      return { success: true };
+      return { success: true };
+    } catch(e) { return { success: false, error: e.message }; }
+  }
+
+  learnAlias(customerId, bankName) {
+    if (!bankName || !customerId) return;
+    const normalized = NameNormalizer.normalize(bankName);
+    try {
+      const existing = this.db.prepare('SELECT id, usage_count FROM customer_aliases WHERE customer_id=? AND normalized_name=?').get(customerId, normalized);
+      if (existing) this.db.prepare('UPDATE customer_aliases SET usage_count=usage_count+1 WHERE id=?').run(existing.id);
+      else this.db.prepare("INSERT INTO customer_aliases (customer_id, alias_name, normalized_name, source, confidence, usage_count) VALUES (?,?,?,'auto_learned',0.8,1)").run(customerId, bankName, normalized);
+    } catch(e) {}
+  }
+
+  addAliasManual(customerId, aliasName) {
+    const normalized = NameNormalizer.normalize(aliasName);
+    try {
+      this.db.prepare("INSERT OR IGNORE INTO customer_aliases (customer_id, alias_name, normalized_name, source, confidence, usage_count) VALUES (?,?,?,'manual',1.0,0)").run(customerId, aliasName, normalized);
+      return { success: true };
+    } catch(e) { return { success: false, error: e.message }; }
+  }
+
+  getAliases(customerId) {
+    try { return this.db.prepare('SELECT * FROM customer_aliases WHERE customer_id=?').all(customerId); } catch(e) { return []; }
+  }
+
+  getStats() {
+    try {
+      return {
+        total_imported: this.db.prepare('SELECT COUNT(*) as c FROM bank_transactions').get().c,
+        matched_auto: this.db.prepare("SELECT COUNT(*) as c FROM bank_transactions WHERE match_status='matched_auto'").get().c,
+        matched_manual: this.db.prepare("SELECT COUNT(*) as c FROM bank_transactions WHERE match_status='matched_manual'").get().c,
+        pending: this.db.prepare("SELECT COUNT(*) as c FROM bank_transactions WHERE match_status='pending'").get().c,
+        pending_payments: this.db.prepare("SELECT COUNT(*) as c FROM payments WHERE status IN ('awaiting_transfer','pending') AND method IN ('transfer','debt')").get().c
+      };
+    } catch(e) { return {}; }
+  }
+
+  undoMatch(bankTxnId) {
+    try {
+      const bt = this.db.prepare('SELECT * FROM bank_transactions WHERE id=?').get(bankTxnId);
+      if (!bt) throw new Error('معاملة بنكية غير موجودة');
+      if (bt.match_status === 'pending') throw new Error('هذه المعاملة غير مطابقة أصلاً');
+
+      const attempts = this.db.prepare('SELECT * FROM matching_attempts WHERE bank_transaction_id=? AND decision IN (?,?)').all(bankTxnId, 'accepted', 'auto_confirmed');
+      if (attempts.length === 0) throw new Error('لا توجد مطابقة مقبولة لهذه المعاملة');
+
+      const paymentIds = attempts.map(a => a.payment_id);
+
+      const txn = this.db.transaction(() => {
+      this.db.prepare("UPDATE bank_transactions SET match_status='pending' WHERE id=?").run(bankTxnId);
+
+      for (const pid of paymentIds) {
+        const payment = this.db.prepare('SELECT * FROM payments WHERE id=?').get(pid);
+        if (payment && payment.method === 'transfer') {
+          this.db.prepare("UPDATE payments SET status='pending' WHERE id=?").run(pid);
+        }
+        this.db.prepare("UPDATE matching_attempts SET decision='reversed', decided_by='user' WHERE bank_transaction_id=? AND payment_id=?").run(bankTxnId, pid);
+      }
+
+      this.db.prepare("INSERT INTO audit_log (action, entity_type, entity_id, details, created_at) VALUES ('undo_match', 'bank_transaction', ?, ?, datetime('now','localtime'))").run(bankTxnId, JSON.stringify({payment_ids: paymentIds, old_status: bt.match_status}));
+
+      });
+      txn();
+      return { success: true, reversed_payments: paymentIds.length };
+    } catch(e) { return { success: false, error: e.message }; }
+  }
+}
+
+module.exports = MatchingEngine;
+
+
+
+
+

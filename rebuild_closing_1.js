@@ -1,0 +1,97 @@
+﻿const fs = require('fs');
+const f = 'C:\\dev\\abu-kamil-pos\\src\\renderer\\scripts\\closing.js';
+
+const lines = [];
+
+// Part 1: Header and init
+lines.push('// ==================== إقفال اليومية ====================');
+lines.push('// الإصدار 6.0 - مع دعم التحويلات المتأخرة');
+lines.push('');
+lines.push('let closingData = {};');
+lines.push('let actualCashAmount = 0;');
+lines.push('let currentUser = null;');
+lines.push('let closingNotes = "";');
+lines.push('');
+lines.push('// ==================== تهيئة الصفحة ====================');
+lines.push('document.addEventListener("DOMContentLoaded", async () => {');
+lines.push('    try {');
+lines.push('        const userData = sessionStorage.getItem("currentUser") || localStorage.getItem("currentUser");');
+lines.push('        if (userData) {');
+lines.push('            currentUser = JSON.parse(userData);');
+lines.push('            const userEl = document.getElementById("currentUserName");');
+lines.push('            if (userEl) userEl.textContent = currentUser.name || currentUser.username;');
+lines.push('        }');
+lines.push('        setupEventListeners();');
+lines.push('        await loadClosingData();');
+lines.push('        console.log("صفحة الإقفال جاهزة");');
+lines.push('    } catch (e) {');
+lines.push('        console.error("خطأ تهيئة الإقفال:", e);');
+lines.push('        showToast("خطأ في تحميل البيانات", "error");');
+lines.push('    }');
+lines.push('});');
+lines.push('');
+
+// setupEventListeners
+lines.push('function setupEventListeners() {');
+lines.push('    const btnSave = document.getElementById("btnSaveClosing");');
+lines.push('    if (btnSave) btnSave.addEventListener("click", confirmSaveClosing);');
+lines.push('    const btnConfirm = document.getElementById("btnConfirmSave");');
+lines.push('    if (btnConfirm) btnConfirm.addEventListener("click", doSaveClosing);');
+lines.push('    const btnPrint = document.getElementById("btnPrintReport");');
+lines.push('    if (btnPrint) btnPrint.addEventListener("click", printReport);');
+lines.push('    const btnExport = document.getElementById("btnExportCSV");');
+lines.push('    if (btnExport) btnExport.addEventListener("click", exportCSV);');
+lines.push('    const cashInput = document.getElementById("actualCash");');
+lines.push('    if (cashInput) {');
+lines.push('        cashInput.addEventListener("input", (e) => {');
+lines.push('            actualCashAmount = parseFloat(e.target.value) || 0;');
+lines.push('            updateCashComparison();');
+lines.push('        });');
+lines.push('    }');
+lines.push('    const notesInput = document.getElementById("closingNotes");');
+lines.push('    if (notesInput) {');
+lines.push('        notesInput.addEventListener("input", (e) => { closingNotes = e.target.value; });');
+lines.push('    }');
+lines.push('    const btnLogout = document.getElementById("btnLogout");');
+lines.push('    if (btnLogout) btnLogout.addEventListener("click", handleLogout);');
+lines.push('    document.querySelectorAll(".modal-close, .btn-cancel-modal").forEach(btn => {');
+lines.push('        btn.addEventListener("click", () => {');
+lines.push('            const modal = btn.closest(".modal-overlay");');
+lines.push('            if (modal) modal.classList.remove("active");');
+lines.push('        });');
+lines.push('    });');
+lines.push('}');
+lines.push('');
+
+// loadClosingData
+lines.push('async function loadClosingData() {');
+lines.push('    try {');
+lines.push('        const [statsRes, debtsRes, transfersRes, invoicesRes, overdueRes] = await Promise.all([');
+lines.push('            window.api.getTodayStats(),');
+lines.push('            window.api.getOutstandingDebts(),');
+lines.push('            window.api.getPendingTransfers(),');
+lines.push('            window.api.getRecentInvoices(200),');
+lines.push('            window.api.getOverdueTransfers ? window.api.getOverdueTransfers() : { success: true, transfers: [] }');
+lines.push('        ]);');
+lines.push('        closingData.stats = statsRes.success ? statsRes.stats : {};');
+lines.push('        closingData.debts = debtsRes.success ? debtsRes.debts : [];');
+lines.push('        closingData.transfers = transfersRes.success ? transfersRes.transfers : [];');
+lines.push('        closingData.invoices = invoicesRes.success ? invoicesRes.invoices : [];');
+lines.push('        closingData.overdueTransfers = overdueRes.success ? overdueRes.transfers : [];');
+lines.push('        console.log("بيانات الإقفال:", closingData.stats);');
+lines.push('        renderSalesSummary();');
+lines.push('        renderPaymentDistribution();');
+lines.push('        renderPendingWarnings();');
+lines.push('        renderTodayDebts();');
+lines.push('        renderCashComparison();');
+lines.push('        renderTodayInvoices();');
+lines.push('        await loadPreviousClosing();');
+lines.push('    } catch (e) {');
+lines.push('        console.error("خطأ تحميل بيانات الإقفال:", e);');
+lines.push('        showToast("خطأ في تحميل البيانات", "error");');
+lines.push('    }');
+lines.push('}');
+lines.push('');
+
+fs.writeFileSync(f, lines.join('\n'), 'utf8');
+console.log('Part 1 done:', lines.length, 'lines');

@@ -1,0 +1,11 @@
+﻿const Database = require('better-sqlite3');
+const path = require('path');
+const dbPath = path.join(process.env.APPDATA, 'abu-kamil-pos', 'abu-kamil-pos.db');
+const db = new Database(dbPath);
+db.pragma('foreign_keys = OFF');
+db.exec("DELETE FROM matching_attempts");
+db.exec("DELETE FROM bank_transactions");
+db.pragma('foreign_keys = ON');
+console.log("تم تنظيف البيانات");
+db.close();
+process.exit();

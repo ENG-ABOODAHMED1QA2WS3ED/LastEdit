@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>الأرصدة والديون — سوبر ماركت أبو كميل</title>
+    <link rel="stylesheet" href="../styles/balances.css">
+</head>
+<body>
+    <!-- ═══════════ الشريط العلوي ═══════════ -->
+    <header class="top-bar">
+        <div class="top-bar-right">
+            <span class="store-name">سوبر ماركت أبو كميل</span>
+            <span class="page-title">📊 الأرصدة والديون</span>
+        </div>
+        <div class="top-bar-left">
+            <span id="clock">00:00</span>
+            <span id="userName" class="user-badge">الكاشير</span>
+        </div>
+    </header>
+
+    <div class="app-layout">
+        <!-- ═══════════ الشريط الجانبي ═══════════ -->
+        <nav class="sidebar">
+            <a href="index.html" class="nav-item">🏠 الرئيسية</a>
+            <a href="invoice.html" class="nav-item">➕ فاتورة جديدة</a>
+            <a href="balances.html" class="nav-item active">📊 الأرصدة</a>
+            <a href="matching.html" class="nav-item">🔄 المطابقة</a>
+            <a href="reports.html" class="nav-item">📈 التقارير</a>
+            <a href="closing.html" class="nav-item">🔒 إقفال اليومية</a>
+            <a href="management.html" class="nav-item">⚙️ الإدارة</a>
+            <div class="nav-spacer"></div>
+            <button id="logoutBtn" class="nav-item logout-btn">🚪 خروج</button>
+        </nav>
+
+        <!-- ═══════════ المحتوى الرئيسي ═══════════ -->
+        <main class="main-content">
+
+            <!-- ─── بطاقات الملخص ─── -->
+            <div class="summary-cards">
+                <div class="summary-card debt-card">
+                    <div class="card-icon">💰</div>
+                    <div class="card-info">
+                        <div class="card-value" id="totalDebts">0.00₪</div>
+                        <div class="card-label">إجمالي الديون المعلّقة</div>
+                    </div>
+                </div>
+                <div class="summary-card transfer-card">
+                    <div class="card-icon">🏦</div>
+                    <div class="card-info">
+                        <div class="card-value" id="totalPendingTransfers">0.00₪</div>
+                        <div class="card-label">تحويلات بانتظار التأكيد</div>
+                    </div>
+                </div>
+                <div class="summary-card customers-card">
+                    <div class="card-icon">👥</div>
+                    <div class="card-info">
+                        <div class="card-value" id="customersWithDebt">0</div>
+                        <div class="card-label">زبائن عليهم ديون</div>
+                    </div>
+                </div>
+                <div class="summary-card pending-card">
+                    <div class="card-icon">⏳</div>
+                    <div class="card-info">
+                        <div class="card-value" id="pendingCount">0</div>
+                        <div class="card-label">عمليات معلّقة</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── التبويبات ─── -->
+            <div class="tabs-container">
+                <div class="tabs-header">
+                    <button class="tab-btn active" data-tab="debts">💰 الديون</button>
+                    <button class="tab-btn" data-tab="transfers">🏦 التحويلات المعلّقة</button>
+                </div>
+
+                <!-- ═══ تبويب الديون ═══ -->
+                <div class="tab-content active" id="debtsTab">
+                    <div class="tab-toolbar">
+                        <input type="text" id="debtSearch" class="search-input" placeholder="🔍 بحث عن زبون...">
+                        <button id="refreshDebtsBtn" class="refresh-btn">🔄 تحديث</button>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>اسم الزبون</th>
+                                    <th>الهاتف</th>
+                                    <th>عدد الفواتير</th>
+                                    <th>إجمالي الدين</th>
+                                    <th>سقف الدين</th>
+                                    <th>آخر دين</th>
+                                    <th>إجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody id="debtsTableBody">
+                                <tr class="empty-row">
+                                    <td colspan="8">جاري التحميل...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ═══ تبويب التحويلات ═══ -->
+                <div class="tab-content" id="transfersTab">
+                    <div class="tab-toolbar">
+                        <input type="text" id="transferSearch" class="search-input" placeholder="🔍 بحث برقم فاتورة أو اسم زبون...">
+                        <button id="refreshTransfersBtn" class="refresh-btn">🔄 تحديث</button>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>رقم الفاتورة</th>
+                                    <th>الزبون</th>
+                                    <th>المبلغ</th>
+                                    <th>طريقة الدفع</th>
+                                    <th>المصدر</th>
+                                    <th>الموعد النهائي</th>
+                                    <th>التاريخ</th>
+                                    <th>إجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transfersTableBody">
+                                <tr class="empty-row">
+                                    <td colspan="9">جاري التحميل...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- ═══════════ مودال تفاصيل الدين ═══════════ -->
+    <div class="modal-overlay" id="debtDetailModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>💰 تفاصيل ديون <span id="debtCustomerName">الزبون</span></h3>
+                <button class="modal-close" id="closeDebtModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="customer-debt-info">
+                    <span>إجمالي الدين: <strong id="debtTotalAmount">0.00₪</strong></span>
+                    <span>سقف الدين: <strong id="debtCeiling">0.00₪</strong></span>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>رقم الفاتورة</th>
+                            <th>التاريخ</th>
+                            <th>المبلغ</th>
+                            <th>السبب</th>
+                            <th>إجراء</th>
+                        </tr>
+                    </thead>
+                    <tbody id="debtDetailsBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════ مودال تأكيد التحويل ═══════════ -->
+    <div class="modal-overlay" id="confirmTransferModal">
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3>✅ تأكيد التحويل</h3>
+                <button class="modal-close" id="closeConfirmModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>هل تؤكد استلام التحويل التالي؟</p>
+                <div class="confirm-details">
+                    <div>رقم الفاتورة: <strong id="confirmInvoiceNum"></strong></div>
+                    <div>المبلغ: <strong id="confirmAmount"></strong></div>
+                    <div>المصدر: <strong id="confirmSource"></strong></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-success" id="btnConfirmTransfer">✅ تأكيد الاستلام</button>
+                    <button class="btn btn-danger" id="btnRejectTransfer">❌ رفض</button>
+                    <button class="btn btn-secondary" id="btnCancelConfirm">إلغاء</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════ مودال تسديد الدين ═══════════ -->
+    <div class="modal-overlay" id="payDebtModal">
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3>💵 تسديد دين</h3>
+                <button class="modal-close" id="closePayDebtModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="pay-debt-info">
+                    <div>الفاتورة: <strong id="payDebtInvoice"></strong></div>
+                    <div>المبلغ: <strong id="payDebtAmount"></strong></div>
+                </div>
+                <div class="form-group">
+                    <label>طريقة التسديد:</label>
+                    <select id="payDebtMethod">
+                        <option value="cash">نقد</option>
+                        <option value="transfer">تحويل بنكي</option>
+                        <option value="wallet">محفظة إلكترونية</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-success" id="btnConfirmPayDebt">✅ تسديد</button>
+                    <button class="btn btn-secondary" id="btnCancelPayDebt">إلغاء</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════ إشعار Toast ═══════════ -->
+    <div id="toast" class="toast"></div>
+
+    <script src="../scripts/balances.js"></script>
+</body>
+</html>

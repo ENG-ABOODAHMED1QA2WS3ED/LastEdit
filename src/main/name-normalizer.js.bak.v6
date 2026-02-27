@@ -1,0 +1,238 @@
+﻿class NameNormalizer {
+  static STOP_WORDS = new Set(['بن', 'ابن', 'ال', 'عبد', 'abd', 'al', 'el', 'bin', 'ibn', 'the', 'mr', 'mrs', 'ms']);
+
+  static normalizeArabic(name) {
+    if (name) name = name.normalize('NFKD');
+    if (!name) return '';
+    let n = name;
+    n = n.replace(/[\u0610-\u061A\u064B-\u065F\u0670]/g, '');
+    n = n.replace(/[أإآ]/g, 'ا');
+    n = n.replace(/ة/g, 'ه');
+    n = n.replace(/ى/g, 'ي');
+    n = n.replace(/ؤ/g, 'و');
+    n = n.replace(/ئ/g, 'ي');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  static normalize(name) {
+    if (name) name = name.normalize('NFKD');
+    if (!name) return '';
+    let n = name.toLowerCase().trim();
+    n = this.normalizeArabic(n);
+    n = n.replace(/[^\w\s\u0600-\u06FF]/g, ' ');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  static getWords(name) {
+    return this.normalize(name).split(/\s+/).filter(w => w.length > 1);
+  }
+
+  // === النظام الصوتي الجديد ===
+
+  // تحويل عربي -> هيكل ساكن لاتيني
+  static arabicToPhonetic(name) {
+    if (name) name = name.normalize('NFKD');
+    if (!name) return '';
+    const map = {
+      'ا':'a','أ':'a','إ':'a','آ':'a','ب':'b','ت':'t','ث':'th',
+      'ج':'j','ح':'h','خ':'kh','د':'d','ذ':'dh','ر':'r','ز':'z',
+      'س':'s','ش':'sh','ص':'s','ض':'d','ط':'t','ظ':'dh',
+      'ع':'a','غ':'gh','ف':'f','ق':'q','ك':'k','ل':'l',
+      'م':'m','ن':'n','ه':'h','ة':'h','و':'w','ي':'y','ى':'a',
+      'ؤ':'w','ئ':'y'
+    };
+    let result = '';
+    for (const ch of name) {
+      result += map[ch] || ch;
+    }
+    return result.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  // إزالة الحروف المتحركة وتطبيع الأصوات المتشابهة
+  static phoneticSkeleton(name) {
+    if (name) name = name.normalize('NFKD');
+    if (!name) return '';
+    // أولا: حول العربي للاتيني
+    let n = this.arabicToPhonetic(name);
+    n = n.toLowerCase();
+    // إزالة كل شيء غير حروف ومسافات
+    n = n.replace(/[^a-z\s]/g, '');
+    // تطبيع الأصوات المتشابهة
+    n = n.replace(/ph/g, 'f');
+    n = n.replace(/gh/g, 'g');
+    n = n.replace(/kh/g, 'k');
+    n = n.replace(/th/g, 't');
+    n = n.replace(/dh/g, 'd');
+    n = n.replace(/sh/g, 's');
+    n = n.replace(/ch/g, 's');
+    n = n.replace(/ck/g, 'k');
+    n = n.replace(/aa/g, 'a');
+    n = n.replace(/ee/g, 'e');
+    n = n.replace(/oo/g, 'o');
+    n = n.replace(/ou/g, 'u');
+    // إزالة الحروف المتحركة (ما عدا بداية الكلمة)
+    n = n.replace(/\b([aeiouy])/g, '_$1_');  // حماية أول حرف
+    n = n.replace(/[aeiouy]/g, '');
+    n = n.replace(/_([a-z])_/g, '$1');
+    // إزالة الحروف المكررة
+    n = n.replace(/(.)\1+/g, '$1');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  // مقارنة كلمة بكلمة بين الهياكل الصوتية
+  static phoneticSimilarity(name1, name2) {
+    if (!name1 || !name2) return 0;
+
+    const skel1 = this.phoneticSkeleton(name1);
+    const skel2 = this.phoneticSkeleton(name2);
+
+    // تطابق تام صوتي
+    if (skel1 === skel2) return 0.95;
+
+    // مقارنة كلمة بكلمة
+    const words1 = skel1.split(/\s+/).filter(w => w.length > 0);
+    const words2 = skel2.split(/\s+/).filter(w => w.length > 0);
+
+    if (words1.length === 0 || words2.length === 0) return 0;
+
+    let matchedWords = 0;
+    const used = new Set();
+
+    for (const w1 of words1) {
+      let bestIdx = -1;
+      let bestScore = 0;
+      for (let j = 0; j < words2.length; j++) {
+        if (used.has(j)) continue;
+        const w2 = words2[j];
+        // تطابق تام
+        if (w1 === w2) { bestIdx = j; bestScore = 1; break; }
+        // احتواء
+        if (w1.includes(w2) || w2.includes(w1)) {
+          const s = Math.min(w1.length, w2.length) / Math.max(w1.length, w2.length);
+          if (s > bestScore) { bestScore = s; bestIdx = j; }
+          continue;
+        }
+        // Levenshtein مع تسامح
+        if (w1.length > 1 && w2.length > 1) {
+          const maxLen = Math.max(w1.length, w2.length);
+          const dist = this.levenshtein(w1, w2);
+          const s = 1 - (dist / maxLen);
+          if (s > 0.7 && s > bestScore) { bestScore = s; bestIdx = j; }
+        }
+      }
+      if (bestIdx >= 0 && bestScore > 0.5) {
+        matchedWords += bestScore;
+        used.add(bestIdx);
+      }
+    }
+
+    const shorter = Math.min(words1.length, words2.length);
+    const longer = Math.max(words1.length, words2.length);
+    
+    // النسبة: الكلمات المطابقة من الاسم الأقصر
+    const coverageShort = matchedWords / shorter;
+    const coverageAll = matchedWords / longer;
+
+    if (coverageShort >= 0.8) return coverageAll * 0.9;
+    if (coverageShort >= 0.6) return Math.max(0.7, coverageAll * 0.9);
+    return coverageAll * 0.8;
+  }
+
+  static isArabic(name) {
+    return /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(name);
+  }
+
+  static isLatin(name) {
+    return /[a-zA-Z]/.test(name) && !/[\u0600-\u06FF]/.test(name);
+  }
+
+  // تشابه النصوص العادي (نفس اللغة)
+  static similarity(name1, name2) {
+    if (!name1 || !name2) return 0;
+
+    const n1 = this.normalize(name1);
+    const n2 = this.normalize(name2);
+
+    if (n1 === n2) return 1.0;
+    // removed: includes shortcut was too aggressive
+
+    const words1 = this.getWords(name1);
+    const words2 = this.getWords(name2);
+
+    if (words1.length === 0 || words2.length === 0) return 0;
+
+    let matchedWords = 0;
+    const shorter = words1.length <= words2.length ? words1 : words2;
+    const longer = words1.length <= words2.length ? words2 : words1;
+
+    for (const sw of shorter) {
+      for (const lw of longer) {
+        if (sw === lw || lw.includes(sw) || sw.includes(lw)) {
+          matchedWords++;
+          break;
+        }
+        if (sw.length > 2 && lw.length > 2) {
+          const maxLen = Math.max(sw.length, lw.length);
+          const dist = this.levenshtein(sw, lw);
+          if (dist <= Math.floor(maxLen * 0.25)) {
+            matchedWords++;
+            break;
+          }
+        }
+      }
+    }
+
+    const coverageShort = matchedWords / shorter.length;
+    const coverageAll = matchedWords / Math.max(words1.length, words2.length);
+
+    if (coverageShort >= 0.9 && matchedWords >= 2) return Math.min(0.9, coverageAll + 0.1);
+    if (coverageShort >= 0.7 && matchedWords >= 2) return Math.min(0.75, coverageAll + 0.05);
+    return coverageAll;
+  }
+
+  // === المقارنة الذكية الرئيسية ===
+  static bestMatch(bankName, customerName, altName, aliases) {
+    let best = 0;
+    const names = [customerName, altName, ...(aliases || [])].filter(Boolean);
+
+    for (const name of names) {
+      // 1. مقارنة مباشرة (نفس اللغة)
+      let sim = this.similarity(bankName, name);
+      if (sim > best) best = sim;
+
+      // 2. مقارنة صوتية (cross-language)
+      const crossLang = (this.isArabic(name) && this.isLatin(bankName)) ||
+                        (this.isLatin(name) && this.isArabic(bankName));
+      if (crossLang) {
+        sim = this.phoneticSimilarity(bankName, name);
+        if (sim > best) best = sim;
+      }
+
+      // 3. حتى لو نفس اللغة جرب الصوتي كاحتياط
+      if (!crossLang) {
+        sim = this.phoneticSimilarity(bankName, name);
+        if (sim > best) best = sim;
+      }
+    }
+
+    return best;
+  }
+
+  static levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m + 1}, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+      }
+    }
+    return dp[m][n];
+  }
+}
+
+module.exports = NameNormalizer;

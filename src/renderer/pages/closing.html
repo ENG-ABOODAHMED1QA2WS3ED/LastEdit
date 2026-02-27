@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+    <title>أبو كميل POS - إقفال اليومية</title>
+    <link rel="stylesheet" href="../styles/closing.css">
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">🏪</span>
+                <div class="logo-text">
+                    <h2>أبو كميل</h2>
+                    <span class="version">v5.0</span>
+                </div>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span>
+                <span class="nav-label">الرئيسية</span>
+            </a>
+            <a href="invoice.html" class="nav-item">
+                <span class="nav-icon">🧾</span>
+                <span class="nav-label">فاتورة جديدة</span>
+            </a>
+            <a href="customers.html" class="nav-item">
+                <span class="nav-icon">👥</span>
+                <span class="nav-label">الزبائن</span>
+            </a>
+            <a href="products.html" class="nav-item">
+                <span class="nav-icon">📦</span>
+                <span class="nav-label">المنتجات</span>
+            </a>
+            <a href="debts.html" class="nav-item">
+                <span class="nav-icon">💳</span>
+                <span class="nav-label">الأرصدة والديون</span>
+            </a>
+            <a href="matching.html" class="nav-item">
+                <span class="nav-icon">🔄</span>
+                <span class="nav-label">المطابقة اليومية</span>
+            </a>
+            <a href="reports.html" class="nav-item">
+                <span class="nav-icon">📊</span>
+                <span class="nav-label">التقارير</span>
+            </a>
+            <a href="settings.html" class="nav-item">
+                <span class="nav-icon">⚙️</span>
+                <span class="nav-label">الإعدادات</span>
+            </a>
+            <a href="closing.html" class="nav-item active">
+                <span class="nav-icon">🔒</span>
+                <span class="nav-label">إقفال اليومية</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <span class="user-icon">👤</span>
+                <span id="currentUserName">المدير</span>
+            </div>
+            <button id="btnLogout" class="btn-logout">تسجيل خروج</button>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Top Bar -->
+        <div class="top-bar">
+            <div class="top-bar-right">
+                <h1>🔒 إقفال اليومية</h1>
+                <p class="subtitle">تقرير نهاية اليوم وإقفال الصندوق</p>
+            </div>
+            <div class="top-bar-left">
+                <span id="closingDate" class="date-display"></span>
+                <button id="btnRefreshClosing" class="btn btn-outline btn-sm">🔄 تحديث</button>
+            </div>
+        </div>
+
+        <!-- معلومات الإقفال -->
+        <div class="closing-info-bar">
+            <div class="info-item">
+                <span class="info-label">التاريخ:</span>
+                <span id="closingDateText" class="info-value"></span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">الوقت:</span>
+                <span id="closingTime" class="info-value"></span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">المستخدم:</span>
+                <span id="closingUser" class="info-value"></span>
+            </div>
+        </div>
+
+        <!-- ملخص مبيعات اليوم -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>📊 ملخص مبيعات اليوم</h2>
+            </div>
+            <div class="summary-cards">
+                <div class="summary-card primary">
+                    <div class="card-icon">💰</div>
+                    <div class="card-value" id="summaryTotalSales">0.00₪</div>
+                    <div class="card-label">إجمالي المبيعات</div>
+                </div>
+                <div class="summary-card info">
+                    <div class="card-icon">🧾</div>
+                    <div class="card-value" id="summaryInvoiceCount">0</div>
+                    <div class="card-label">عدد الفواتير</div>
+                </div>
+                <div class="summary-card success">
+                    <div class="card-icon">📈</div>
+                    <div class="card-value" id="summaryAvgInvoice">0.00₪</div>
+                    <div class="card-label">متوسط الفاتورة</div>
+                </div>
+                <div class="summary-card warning">
+                    <div class="card-icon">✅</div>
+                    <div class="card-value" id="summaryCompleted">0</div>
+                    <div class="card-label">فواتير مكتملة</div>
+                </div>
+                <div class="summary-card danger">
+                    <div class="card-icon">⏳</div>
+                    <div class="card-value" id="summaryPending">0</div>
+                    <div class="card-label">فواتير معلقة</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- توزيع طرق الدفع -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>💵 توزيع طرق الدفع</h2>
+                <span id="paymentMatchStatus"></span>
+            </div>
+            <div class="payment-breakdown">
+                <div class="payment-row">
+                    <div class="payment-label">
+                        <span class="payment-icon cash">💵</span>
+                        <span>نقد</span>
+                    </div>
+                    <div class="payment-bar-container">
+                        <div class="payment-bar cash" id="barCash" style="width: 0%"></div>
+                    </div>
+                    <div class="payment-amount" id="payCash">0.00₪</div>
+                    <div class="payment-pct" id="payCashPct">0%</div>
+                </div>
+                <div class="payment-row">
+                    <div class="payment-label">
+                        <span class="payment-icon transfer">🏦</span>
+                        <span>تحويلات</span>
+                    </div>
+                    <div class="payment-bar-container">
+                        <div class="payment-bar transfer" id="barTransfers" style="width: 0%"></div>
+                    </div>
+                    <div class="payment-amount" id="payTransfers">0.00₪</div>
+                    <div class="payment-pct" id="payTransfersPct">0%</div>
+                </div>
+                <div class="payment-row">
+                    <div class="payment-label">
+                        <span class="payment-icon debt">📋</span>
+                        <span>ديون</span>
+                    </div>
+                    <div class="payment-bar-container">
+                        <div class="payment-bar debt" id="barDebts" style="width: 0%"></div>
+                    </div>
+                    <div class="payment-amount" id="payDebts">0.00₪</div>
+                    <div class="payment-pct" id="payDebtsPct">0%</div>
+                </div>
+                <div class="payment-total">
+                    <span>المجموع:</span>
+                    <strong id="payTotal">0.00₪</strong>
+                </div>
+            </div>
+        </section>
+
+        <!-- تحذيرات التحويلات المعلقة -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>⚠️ التحويلات المعلقة</h2>
+            </div>
+            <div id="pendingWarnings">
+                <div class="loading-placeholder">جاري التحميل...</div>
+            </div>
+        </section>
+
+        <!-- الديون الجديدة -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>📋 ديون اليوم الجديدة</h2>
+            </div>
+            <div id="newDebtsSection">
+                <div class="loading-placeholder">جاري التحميل...</div>
+            </div>
+        </section>
+
+        <!-- مقارنة النقد -->
+        <section class="closing-section highlight">
+            <div class="section-header">
+                <h2>🏦 مقارنة الصندوق</h2>
+            </div>
+            <div class="cash-reconciliation">
+                <div class="reconciliation-grid">
+                    <div class="reconciliation-item">
+                        <div class="reconciliation-label">النقد المتوقع (من النظام)</div>
+                        <div class="reconciliation-value expected" id="expectedCash">0.00₪</div>
+                        <div class="reconciliation-bar">
+                            <div class="bar-fill expected" id="barExpectedCash" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="reconciliation-item">
+                        <div class="reconciliation-label">النقد الفعلي (في الصندوق)</div>
+                        <div class="reconciliation-input">
+                            <input type="number" id="actualCashInput" class="cash-input" placeholder="أدخل المبلغ الفعلي" step="0.01" min="0">
+                            <span class="currency-label">₪</span>
+                        </div>
+                        <div class="reconciliation-value actual" id="actualCash">0.00₪</div>
+                        <div class="reconciliation-bar">
+                            <div class="bar-fill actual" id="barActualCash" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="reconciliation-item result">
+                        <div class="reconciliation-label">الفرق</div>
+                        <div class="reconciliation-value" id="cashDifference">0.00₪</div>
+                        <div id="cashDiffStatus"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- قائمة فواتير اليوم -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>🧾 فواتير اليوم (<span id="invoicesCount">0</span>)</h2>
+            </div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>الزبون</th>
+                            <th>المبلغ</th>
+                            <th>الحالة</th>
+                            <th>الوقت</th>
+                        </tr>
+                    </thead>
+                    <tbody id="invoicesListBody">
+                        <tr>
+                            <td colspan="5" class="empty-row">جاري التحميل...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- الإقفال السابق -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>📁 آخر إقفال</h2>
+            </div>
+            <div id="previousClosingInfo">
+                <div class="loading-placeholder">جاري التحميل...</div>
+            </div>
+        </section>
+
+        <!-- ملاحظات الإقفال -->
+        <section class="closing-section">
+            <div class="section-header">
+                <h2>📝 ملاحظات</h2>
+            </div>
+            <div class="notes-container">
+                <textarea id="closingNotes" class="closing-notes-input" rows="3" placeholder="أضف ملاحظات على إقفال اليوم (اختياري)..."></textarea>
+            </div>
+        </section>
+
+        <!-- أزرار الإجراءات -->
+        <section class="closing-actions">
+            <button id="btnSaveClosing" class="btn btn-primary btn-lg">
+                🔒 حفظ الإقفال
+            </button>
+            <button id="btnPrintClosing" class="btn btn-success btn-lg">
+                🖨️ طباعة التقرير
+            </button>
+            <button id="btnExportClosing" class="btn btn-info btn-lg">
+                📥 تصدير CSV
+            </button>
+        </section>
+    </main>
+
+    <!-- مودال تأكيد الإقفال -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>🔒 تأكيد إقفال اليومية</h3>
+                <button class="modal-close" data-close-modal="confirmModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="confirm-message">هل أنت متأكد من إقفال يومية اليوم؟</p>
+                <div id="confirmSummary"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="btnConfirmSave" class="btn btn-primary">تأكيد الإقفال</button>
+                <button id="btnCancelSave" class="btn btn-outline">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- مودال النجاح -->
+    <div class="modal-overlay" id="successModal">
+        <div class="modal-dialog">
+            <div class="modal-header success">
+                <h3>✅ تم الإقفال بنجاح</h3>
+            </div>
+            <div class="modal-body">
+                <div class="success-icon-large">🎉</div>
+                <div id="successSummary"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="btnCloseDone" class="btn btn-primary">العودة للرئيسية</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- مودال الإقفال السابق -->
+    <div class="modal-overlay" id="previousModal">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-header">
+                <h3>📁 تفاصيل الإقفال السابق</h3>
+                <button class="modal-close" data-close-modal="previousModal">✕</button>
+            </div>
+            <div class="modal-body" id="previousClosingContent"></div>
+            <div class="modal-footer">
+                <button id="btnClosePrevious" class="btn btn-outline">إغلاق</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="../scripts/closing.js"></script>
+</body>
+</html>

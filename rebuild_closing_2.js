@@ -1,0 +1,107 @@
+﻿const fs = require('fs');
+const f = 'C:\\dev\\abu-kamil-pos\\src\\renderer\\scripts\\closing.js';
+const lines = [];
+
+// renderSalesSummary
+lines.push('function renderSalesSummary() {');
+lines.push('    const stats = closingData.stats || {};');
+lines.push('    const el = document.getElementById("salesSummary");');
+lines.push('    if (!el) return;');
+lines.push('    el.innerHTML = ""');
+lines.push('        + "<div class=\\"summary-card\\"><div class=\\"summary-label\\">عدد الفواتير</div><div class=\\"summary-value\\">" + (stats.sales_count || 0) + "</div></div>"');
+lines.push('        + "<div class=\\"summary-card\\"><div class=\\"summary-label\\">إجمالي المبيعات</div><div class=\\"summary-value\\">" + formatCurrency(parseFloat(stats.sales_total) || 0) + "</div></div>"');
+lines.push('        + "<div class=\\"summary-card\\"><div class=\\"summary-label\\">النقد</div><div class=\\"summary-value\\">" + formatCurrency(parseFloat(stats.cash_total) || 0) + "</div></div>"');
+lines.push('        + "<div class=\\"summary-card\\"><div class=\\"summary-label\\">التحويلات</div><div class=\\"summary-value\\">" + formatCurrency(parseFloat(stats.transfers_total) || 0) + "</div></div>"');
+lines.push('        + "<div class=\\"summary-card\\"><div class=\\"summary-label\\">الديون</div><div class=\\"summary-value\\">" + formatCurrency(parseFloat(stats.debts_total) || 0) + "</div></div>";');
+lines.push('}');
+lines.push('');
+
+// renderPaymentDistribution
+lines.push('function renderPaymentDistribution() {');
+lines.push('    const stats = closingData.stats || {};');
+lines.push('    const total = parseFloat(stats.sales_total) || 0;');
+lines.push('    const cash = parseFloat(stats.cash_total) || 0;');
+lines.push('    const transfers = parseFloat(stats.transfers_total) || 0;');
+lines.push('    const debts = parseFloat(stats.debts_total) || 0;');
+lines.push('    const el = document.getElementById("paymentDistribution");');
+lines.push('    if (!el) return;');
+lines.push('    const pCash = total > 0 ? ((cash/total)*100).toFixed(1) : 0;');
+lines.push('    const pTrans = total > 0 ? ((transfers/total)*100).toFixed(1) : 0;');
+lines.push('    const pDebt = total > 0 ? ((debts/total)*100).toFixed(1) : 0;');
+lines.push('    el.innerHTML = ""');
+lines.push('        + "<div class=\\"dist-row\\"><span class=\\"dist-label\\">نقد</span><div class=\\"dist-bar\\"><div class=\\"dist-fill cash\\" style=\\"width:" + pCash + "%\\"></div></div><span class=\\"dist-pct\\">" + pCash + "%</span></div>"');
+lines.push('        + "<div class=\\"dist-row\\"><span class=\\"dist-label\\">تحويل</span><div class=\\"dist-bar\\"><div class=\\"dist-fill transfer\\" style=\\"width:" + pTrans + "%\\"></div></div><span class=\\"dist-pct\\">" + pTrans + "%</span></div>"');
+lines.push('        + "<div class=\\"dist-row\\"><span class=\\"dist-label\\">دين</span><div class=\\"dist-bar\\"><div class=\\"dist-fill debt\\" style=\\"width:" + pDebt + "%\\"></div></div><span class=\\"dist-pct\\">" + pDebt + "%</span></div>";');
+lines.push('}');
+lines.push('');
+
+// renderPendingWarnings - مع دعم التحويلات المتأخرة
+lines.push('function renderPendingWarnings() {');
+lines.push('    const transfers = closingData.transfers || [];');
+lines.push('    const overdueTransfers = closingData.overdueTransfers || [];');
+lines.push('    const el = document.getElementById("pendingWarnings");');
+lines.push('    if (!el) return;');
+lines.push('    let html = "";');
+lines.push('');
+lines.push('    // === التحويلات المتأخرة ===');
+lines.push('    if (overdueTransfers.length > 0) {');
+lines.push('        let overdueTotal = overdueTransfers.reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);');
+lines.push('        html += "<div class=\\"warning-card danger\\" style=\\"border:2px solid #ff4444;background:#fff5f5;padding:15px;border-radius:10px;margin-bottom:15px\\">";');
+lines.push('        html += "<h4 style=\\"color:#ff4444;margin:0 0 10px\\">\\u26D4 تحويلات متأخرة (" + overdueTransfers.length + ") - " + formatCurrency(overdueTotal) + "</h4>";');
+lines.push('        overdueTransfers.forEach(t => {');
+lines.push('            const deadlineDate = t.transfer_deadline ? new Date(t.transfer_deadline).toLocaleString("ar") : "غير محدد";');
+lines.push('            html += "<div id=\\"overdue-" + t.id + "\\" class=\\"overdue-item\\" style=\\"background:#fff;border:1px solid #ffcdd2;border-radius:8px;padding:10px;margin:8px 0;display:flex;justify-content:space-between;align-items:center\\">";');
+lines.push('            html += "<div><strong>" + (t.customer_name || "غير معروف") + "</strong> - " + formatCurrency(parseFloat(t.amount) || 0) + "<br><small style=\\"color:#999\\">المهلة: " + deadlineDate + "</small></div>";');
+lines.push('            html += "<div style=\\"display:flex;gap:8px\\">";');
+lines.push('            html += "<button onclick=\\"convertToDebt(" + t.id + ")\\" class=\\"btn btn-danger btn-sm\\" style=\\"padding:5px 12px;font-size:12px\\">\\u27A1 تحويل لدين</button>";');
+lines.push('            html += "<button onclick=\\"deferTransfer(" + t.id + ")\\" class=\\"btn btn-warning btn-sm\\" style=\\"padding:5px 12px;font-size:12px\\">\\u23F3 تأجيل لغد</button>";');
+lines.push('            html += "</div></div>";');
+lines.push('        });');
+lines.push('        html += "</div>";');
+lines.push('    }');
+lines.push('');
+lines.push('    // === التحويلات المعلقة ===');
+lines.push('    const pendingCount = transfers.length;');
+lines.push('    const pendingTotal = transfers.reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);');
+lines.push('    if (pendingCount === 0 && overdueTransfers.length === 0) {');
+lines.push('        html += "<div class=\\"success-card\\" style=\\"background:#e8f5e9;padding:15px;border-radius:10px;text-align:center\\"><span style=\\"color:#4CAF50;font-size:18px\\">\\u2705 لا توجد تحويلات معلقة</span></div>";');
+lines.push('    } else if (pendingCount > 0) {');
+lines.push('        html += "<div class=\\"warning-card\\" style=\\"background:#fff8e1;border:1px solid #ffb300;padding:15px;border-radius:10px\\">";');
+lines.push('        html += "<h4 style=\\"color:#ff8f00;margin:0 0 10px\\">\\u26A0 تحويلات معلقة (" + pendingCount + ") - " + formatCurrency(pendingTotal) + "</h4>";');
+lines.push('        html += "<table style=\\"width:100%;border-collapse:collapse\\">";');
+lines.push('        html += "<tr style=\\"background:#fff3e0\\"><th style=\\"padding:8px;text-align:right\\">الزبون</th><th style=\\"padding:8px;text-align:right\\">المبلغ</th><th style=\\"padding:8px;text-align:right\\">النوع</th><th style=\\"padding:8px;text-align:right\\">التاريخ</th></tr>";');
+lines.push('        transfers.forEach(t => {');
+lines.push('            html += "<tr style=\\"border-bottom:1px solid #eee\\"><td style=\\"padding:8px\\">" + (t.customer_name||"") + "</td><td style=\\"padding:8px\\">" + formatCurrency(parseFloat(t.amount)||0) + "</td><td style=\\"padding:8px\\">" + getTransferTypeName(t.transfer_type) + "</td><td style=\\"padding:8px\\">" + formatDate(t.created_at) + "</td></tr>";');
+lines.push('        });');
+lines.push('        html += "</table></div>";');
+lines.push('    }');
+lines.push('    el.innerHTML = html;');
+lines.push('}');
+lines.push('');
+
+// renderTodayDebts
+lines.push('function renderTodayDebts() {');
+lines.push('    const debts = closingData.debts || [];');
+lines.push('    const el = document.getElementById("todayDebts");');
+lines.push('    if (!el) return;');
+lines.push('    const today = new Date().toISOString().split("T")[0];');
+lines.push('    const todayDebts = debts.filter(d => d.created_at && d.created_at.startsWith(today));');
+lines.push('    if (todayDebts.length === 0) {');
+lines.push('        el.innerHTML = "<div style=\\"text-align:center;padding:20px;color:#999\\">لا توجد ديون جديدة اليوم</div>";');
+lines.push('        return;');
+lines.push('    }');
+lines.push('    let totalDebt = todayDebts.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);');
+lines.push('    let html = "<div style=\\"margin-bottom:10px\\"><strong>ديون اليوم: " + todayDebts.length + " | الإجمالي: " + formatCurrency(totalDebt) + "</strong></div>";');
+lines.push('    html += "<table style=\\"width:100%;border-collapse:collapse\\">";');
+lines.push('    html += "<tr style=\\"background:#f5f5f5\\"><th style=\\"padding:8px;text-align:right\\">الزبون</th><th style=\\"padding:8px;text-align:right\\">المبلغ</th><th style=\\"padding:8px;text-align:right\\">السبب</th></tr>";');
+lines.push('    todayDebts.forEach(d => {');
+lines.push('        html += "<tr style=\\"border-bottom:1px solid #eee\\"><td style=\\"padding:8px\\">" + (d.customer_name||"") + "</td><td style=\\"padding:8px\\">" + formatCurrency(parseFloat(d.amount)||0) + "</td><td style=\\"padding:8px\\">" + (d.debt_reason||"") + "</td></tr>";');
+lines.push('    });');
+lines.push('    html += "</table>";');
+lines.push('    el.innerHTML = html;');
+lines.push('}');
+lines.push('');
+
+fs.appendFileSync(f, '\n' + lines.join('\n'), 'utf8');
+console.log('Part 2 done:', lines.length, 'new lines');
+console.log('Total:', fs.readFileSync(f,'utf8').split('\n').length, 'lines');

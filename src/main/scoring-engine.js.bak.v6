@@ -1,0 +1,96 @@
+﻿const NameNormalizer = require('./name-normalizer');
+
+class ScoringEngine {
+
+  constructor(config) {
+    this.autoThreshold        = parseFloat(config.auto_confirm_threshold  || 90);
+    this.suggestThreshold     = parseFloat(config.suggestion_threshold    || 60);
+    this.amountTolerancePct   = parseFloat(config.amount_tolerance_percent || 1);
+    this.amountToleranceFixed = parseFloat(config.amount_tolerance_fixed  || 2);
+    this.dateToleranceDays    = parseInt(config.date_tolerance_days       || 3);
+    this.minNameSimilarity    = parseFloat(config.min_name_similarity     || 0.6);
+  }
+
+  static WEIGHTS = { amount: 40, name: 30, date: 15, reference: 10, history: 5 };
+
+  calculate(bankTx, payment, customer, pastMatches) {
+    if (!pastMatches) pastMatches = [];
+    const breakdown = {};
+
+    breakdown.amount    = this.scoreAmount(bankTx.amount, payment.amount);
+    breakdown.name      = this.scoreName(bankTx.parsed_name, customer);
+    breakdown.date      = this.scoreDate(bankTx.parsed_date, payment.created_at);
+    breakdown.reference = this.scoreReference(bankTx, payment);
+    breakdown.history   = this.scoreHistory(customer.id, pastMatches);
+
+    const totalScore = Object.values(breakdown).reduce((a, b) => a + b, 0);
+
+    let level;
+    if (totalScore >= this.autoThreshold)         level = 'auto_confirmed';
+    else if (totalScore >= this.suggestThreshold) level = 'suggested';
+    else                                          level = 'unmatched';
+
+    return { totalScore, breakdown, level };
+  }
+
+  scoreAmount(bankAmount, paymentAmount) {
+    const MAX = ScoringEngine.WEIGHTS.amount;
+    if (!bankAmount || !paymentAmount) return 0;
+    const diff = Math.abs(bankAmount - paymentAmount);
+    const pctDiff = (diff / paymentAmount) * 100;
+    if (diff < 0.01)                       return MAX;
+    if (diff <= this.amountToleranceFixed) return MAX * 0.90;
+    if (pctDiff <= this.amountTolerancePct)return MAX * 0.85;
+    if (pctDiff <= 5)                      return MAX * 0.50;
+    return 0;
+  }
+
+  scoreName(bankName, customer) {
+    const MAX = ScoringEngine.WEIGHTS.name;
+    if (!bankName) return 0;
+    const result = NameNormalizer.bestMatch(bankName, customer);
+    if (result.score < this.minNameSimilarity) return 0;
+    const range = 1 - this.minNameSimilarity;
+    const normalized = (result.score - this.minNameSimilarity) / range;
+    return Math.round(MAX * normalized * 100) / 100;
+  }
+
+  scoreDate(bankDate, paymentDate) {
+    const MAX = ScoringEngine.WEIGHTS.date;
+    if (!bankDate || !paymentDate) return MAX * 0.3;
+    const d1 = new Date(bankDate);
+    const d2 = new Date(paymentDate);
+    if (isNaN(d1) || isNaN(d2)) return MAX * 0.3;
+    const diffDays = Math.abs((d1 - d2) / 86400000);
+    if (diffDays <= 1) return MAX;
+    if (diffDays <= 3) return MAX * 0.70;
+    if (diffDays <= 7) return MAX * 0.30;
+    return 0;
+  }
+
+  scoreReference(bankTx, payment) {
+    const MAX = ScoringEngine.WEIGHTS.reference;
+    if (bankTx.reference_number && payment.invoice_id) {
+      const ref = bankTx.reference_number.toString();
+      const inv = payment.invoice_id.toString();
+      if (ref.includes(inv) || inv.includes(ref)) return MAX;
+    }
+    if (bankTx.raw_description && payment.invoice_id) {
+      if (bankTx.raw_description.includes(payment.invoice_id.toString())) {
+        return MAX * 0.8;
+      }
+    }
+    return 0;
+  }
+
+  scoreHistory(customerId, pastMatches) {
+    const MAX = ScoringEngine.WEIGHTS.history;
+    if (!pastMatches || pastMatches.length === 0) return 0;
+    const successful = pastMatches.filter(m => m.customer_id === customerId);
+    if (successful.length >= 3) return MAX;
+    if (successful.length >= 1) return MAX * 0.6;
+    return 0;
+  }
+}
+
+module.exports = ScoringEngine;

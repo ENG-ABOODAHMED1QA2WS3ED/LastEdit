@@ -1,0 +1,480 @@
+﻿// name-normalizer.js - v7.0 Production Grade
+// Based on Bank Reconciliation Matching Engine spec
+
+class NameNormalizer {
+
+  // === PHASE 1: TEXT NORMALIZATION ===
+
+  static normalizeArabic(name) {
+    if (!name) return '';
+    // NFKD: fixes Arabic Presentation Forms (FB50-FDFF, FE70-FEFF)
+    let n = name.normalize('NFKD');
+    // Remove diacritics (tashkeel)
+    n = n.replace(/[\u0610-\u061A\u064B-\u065F\u0670]/g, '');
+    // Normalize Arabic letter variations
+    n = n.replace(/[أإآٱ]/g, 'ا');
+    n = n.replace(/ة/g, 'ه');
+    n = n.replace(/[ىی]/g, 'ي');  // includes Farsi yeh U+06CC
+    n = n.replace(/ؤ/g, 'و');
+    n = n.replace(/ئ/g, 'ي');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  static normalize(name) {
+    if (!name) return '';
+    let n = name.normalize('NFKD');
+    n = n.toLowerCase().trim();
+    n = this.normalizeArabic(n);
+    // Remove non-word chars except Arabic and spaces
+    n = n.replace(/[^\w\s\u0600-\u06FF]/g, ' ');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  static getWords(name) {
+    return this.normalize(name).split(/\s+/).filter(w => w.length > 1);
+  }
+
+  // === NAME COMPONENT EXTRACTION (Critical for Hard Gates) ===
+
+  static COMMON_FIRST_NAMES = new Set([
+    'محمد', 'احمد', 'علي', 'عمر', 'خالد', 'حسن', 'حسين', 'ابراهيم', 'يوسف', 'سعيد',
+    'عبد', 'صالح', 'ماهر', 'طارق', 'سامي', 'رامي', 'نادر', 'وليد', 'فادي', 'هاني',
+    'mohammed', 'mohammad', 'mohamed', 'muhammad', 'muhamad', 'muhamed',
+    'ahmad', 'ahmed', 'ali', 'omar', 'khaled', 'khalid', 'hassan', 'hussein',
+    'ibrahim', 'yousef', 'youssef', 'joseph', 'said', 'saeed', 'saleh',
+    'maher', 'tariq', 'sami', 'rami', 'nader', 'waleed', 'walid', 'fadi', 'hani'
+  ]);
+
+  static PREFIXES = new Set(['ابو', 'أبو', 'abu', 'abo', 'al', 'el', 'ال']);
+
+  static extractNameComponents(name) {
+    if (!name) return { type: 'empty', firstName: '', lastName: '', fullName: '', key: '' };
+
+    const normalized = this.normalize(name);
+    const words = normalized.split(/\s+/).filter(w => w.length > 1);
+
+    // Company detection
+    const companyIndicators = ['شركه', 'شركة', 'مؤسسه', 'مؤسسة', 'ltd', 'co', 'inc', 'corp', 'llc'];
+    if (companyIndicators.some(ind => normalized.includes(ind))) {
+      return { type: 'company', firstName: '', lastName: '', fullName: normalized, key: normalized };
+    }
+
+    if (words.length === 0) {
+      return { type: 'empty', firstName: '', lastName: '', fullName: '', key: '' };
+    }
+
+    if (words.length === 1) {
+      return {
+        type: 'single_name',
+        firstName: words[0],
+        lastName: '',
+        fullName: normalized,
+        key: words[0],
+        penaltyScore: 0.20
+      };
+    }
+
+    // Handle "abu/abo" prefix as part of family name
+    let lastName = words[words.length - 1];
+    let lastNameStart = words.length - 1;
+
+    // If last word is very short or second-to-last is a prefix, combine
+    if (lastNameStart > 0) {
+      const prev = words[lastNameStart - 1];
+      if (this.PREFIXES.has(prev)) {
+        lastName = prev + ' ' + lastName;
+        lastNameStart--;
+      }
+    }
+
+    return {
+      type: 'person',
+      firstName: words[0],
+      lastName: lastName,
+      middleNames: words.slice(1, lastNameStart),
+      fullName: normalized,
+      key: lastName,
+      penaltyScore: 0
+    };
+  }
+
+  // === HARD GATE: Family Name Match ===
+
+
+  // === ARABIC-ENGLISH NAME TRANSLITERATION ===
+  static _nameMap = {
+    // الأسماء الأولى الشائعة
+    'طاهر': 'taher', 'احمد': 'ahmed', 'محمد': 'mohammed', 'محمود': 'mahmoud',
+    'ابراهيم': 'ibrahim', 'اسماعيل': 'ismail', 'عبدالله': 'abdullah',
+    'عبد': 'abd', 'خالد': 'khaled', 'عمر': 'omar', 'علي': 'ali',
+    'حسن': 'hassan', 'حسين': 'hussain', 'يوسف': 'yousef', 'سعيد': 'saeed',
+    'صالح': 'saleh', 'رامي': 'rami', 'سامي': 'sami', 'هاني': 'hani',
+    'وليد': 'waleed', 'نادر': 'nader', 'عماد': 'emad', 'اياد': 'eiad',
+    'حمزه': 'hamza', 'حمزة': 'hamza', 'بكر': 'bakr', 'انور': 'anwar',
+    'دياء': 'diaa', 'جهاد': 'jehad', 'كمال': 'kamal', 'اسامه': 'osama',
+    'اسامة': 'osama', 'رفيق': 'rafiq', 'عصام': 'issam', 'امجد': 'amjad',
+    'سمير': 'samir', 'بدر': 'bader', 'ايمن': 'ayman', 'باسم': 'basem',
+    'منال': 'manal', 'ريما': 'rima', 'دلال': 'dalal', 'ايمان': 'eman',
+    'رشا': 'rasha', 'سحر': 'sahar', 'امل': 'amal', 'سلوى': 'salwa',
+    'ميسون': 'maysoon', 'امنيه': 'amany', 'اماني': 'amany', 'امينه': 'amina',
+    'سهام': 'seham', 'ريهام': 'reham', 'رنا': 'rana', 'مي': 'mai',
+    'هديل': 'hadeel', 'علاء': 'alaa', 'اسلام': 'islam', 'نضال': 'nidal',
+    'بشير': 'basheer', 'غسان': 'ghassan', 'وسيم': 'waseem', 'طارق': 'tariq',
+    'خليل': 'khalil', 'عامر': 'amer', 'ناهض': 'nahid', 'فايز': 'fayez',
+    'شريهان': 'sherehan', 'داليا': 'dalia', 'رغده': 'raghda', 'رغدة': 'raghda',
+    'اغيد': 'aghyad', 'نورالدين': 'nouraldeen', 'عزالدين': 'ezzaldean',
+    'ميرفت': 'merfat', 'سماح': 'samah', 'رجاء': 'rajaa', 'هناء': 'hanaa',
+    'ابير': 'abeer', 'رولا': 'rola', 'سالي': 'sali',
+    // ألقاب العائلة الشائعة
+    'حمدي': 'hamdi', 'الشوا': 'alshawwa', 'شوا': 'shawwa', 'ابو': 'abu',
+    'الدايه': 'eldaya', 'دايه': 'daya', 'نصار': 'nassar', 'جعرور': 'jarour',
+    'مرزوق': 'marzouq', 'كرديه': 'kardia', 'شبلاق': 'sheblaq',
+    'الزايغ': 'alzaygh', 'البحري': 'albahri', 'حماد': 'hammad',
+    'حمادين': 'hammadeen', 'السويركي': 'alswerki', 'المدهون': 'almadahon',
+    'الحصري': 'alhosri', 'النجار': 'alnajjar', 'الغفري': 'alghafri',
+    'السوده': 'alsoda', 'الشوبكي': 'alshobki', 'اليازجي': 'alyazji',
+    'المبيض': 'almubayed', 'الوكيل': 'alwakeel', 'الاشرم': 'alashram',
+    'الشرفا': 'alsharfa', 'زيديه': 'zedia', 'برغوث': 'barghouth',
+    'حموده': 'hamouda', 'داود': 'dawood', 'مكاوي': 'makawi',
+    'عطيه': 'atya', 'قنيطه': 'qaneta', 'دلول': 'dalool',
+    'ابوكميل': 'abukamil', 'كميل': 'kamil', 'عياش': 'ayash',
+    'حرب': 'harb', 'رحمه': 'rahma', 'وطفه': 'watfa'
+  };
+
+  // بناء خريطة عكسية (إنجليزي -> عربي)
+  static _reverseMap = null;
+  static _getReverseMap() {
+    if (!this._reverseMap) {
+      this._reverseMap = {};
+      for (const [ar, en] of Object.entries(this._nameMap)) {
+        if (!this._reverseMap[en]) this._reverseMap[en] = [];
+        this._reverseMap[en].push(ar);
+      }
+    }
+    return this._reverseMap;
+  }
+
+  // ترجمة اسم عربي لإنجليزي (كلمة كلمة)
+  static transliterateToEnglish(arabicName) {
+    if (!arabicName) return '';
+    const norm = this.normalizeArabic(arabicName.toLowerCase());
+    const words = norm.split(/\s+/);
+    return words.map(w => this._nameMap[w] || w).join(' ');
+  }
+
+  // ترجمة اسم إنجليزي لعربي (كلمة كلمة)
+  static transliterateToArabic(englishName) {
+    if (!englishName) return '';
+    const rev = this._getReverseMap();
+    const words = englishName.toLowerCase().split(/\s+/);
+    return words.map(w => (rev[w] && rev[w][0]) || w).join(' ');
+  }
+
+  // مقارنة عبر اللغات: حول كلاهما للإنجليزي وقارن
+  static crossLanguageMatch(name1, name2) {
+    if (!name1 || !name2) return { match: false, score: 0 };
+    
+    const n1 = name1.toLowerCase().trim();
+    const n2 = name2.toLowerCase().trim();
+    
+    // إذا نفس اللغة قارن مباشرة
+    const isArabic1 = /[\u0600-\u06FF]/.test(n1);
+    const isArabic2 = /[\u0600-\u06FF]/.test(n2);
+    
+    if (isArabic1 === isArabic2) return null; // نفس اللغة لا حاجة للترجمة
+    
+    // حول العربي للإنجليزي
+    const en1 = isArabic1 ? this.transliterateToEnglish(n1) : n1;
+    const en2 = isArabic2 ? this.transliterateToEnglish(n2) : n2;
+    
+    const sim = this.levenshteinSimilarity(en1, en2);
+    
+    // أيضا جرب: حول الإنجليزي للعربي
+    const ar1 = isArabic1 ? this.normalizeArabic(n1) : this.transliterateToArabic(n1);
+    const ar2 = isArabic2 ? this.normalizeArabic(n2) : this.transliterateToArabic(n2);
+    const simAr = this.levenshteinSimilarity(ar1, ar2);
+    
+    const bestSim = Math.max(sim, simAr);
+    
+    return { match: bestSim >= 0.5, score: bestSim, en: en1 + ' vs ' + en2, ar: ar1 + ' vs ' + ar2 };
+  }
+
+  static familyNameMatch(bankName, customerName) {
+    const bank = this.extractNameComponents(bankName);
+    const cust = this.extractNameComponents(customerName);
+
+    // Empty names = no match
+    if (bank.type === 'empty' || cust.type === 'empty') return { match: false, reason: 'empty_name' };
+
+    // Company: require high full-name similarity
+    if (bank.type === 'company' || cust.type === 'company') {
+      const sim = this.wordSimilarity(bank.fullName, cust.fullName);
+      return { match: sim >= 0.7, reason: 'company', score: sim };
+    }
+
+    // Single name: require exact match or cross-language
+    if (bank.type === 'single_name' || cust.type === 'single_name') {
+      const singleKey = bank.type === 'single_name' ? bank.key : cust.key;
+      const otherComp = bank.type === 'single_name' ? cust : bank;
+      if (singleKey === otherComp.firstName || singleKey === otherComp.lastName) {
+        return { match: true, reason: 'single_name_exact', score: 0.6 };
+      }
+      // Cross-language single name check
+      const crossSingle = this.crossLanguageMatch(singleKey, otherComp.firstName);
+      if (crossSingle && crossSingle.score >= 0.7) {
+        return { match: true, reason: 'single_name_cross', score: 0.55 };
+      }
+      const crossSingleLast = this.crossLanguageMatch(singleKey, otherComp.lastName);
+      if (crossSingleLast && crossSingleLast.score >= 0.7) {
+        return { match: true, reason: 'single_name_cross_last', score: 0.55 };
+      }
+      return { match: false, reason: 'single_name_no_match' };
+    }
+
+    // Both are persons: family name MUST match
+    const bankFamily = this.normalizeArabic(bank.lastName);
+    const custFamily = this.normalizeArabic(cust.lastName);
+
+    // Exact family name match
+    if (bankFamily === custFamily) {
+      return { match: true, reason: 'family_exact', score: 1.0 };
+    }
+
+    // Cross-language: last name vs last name
+    const crossLast = this.crossLanguageMatch(bank.lastName, cust.lastName);
+    if (crossLast && crossLast.score >= 0.7) {
+      const crossFirst = this.crossLanguageMatch(bank.firstName, cust.firstName);
+      const firstBonus = (crossFirst && crossFirst.score > 0.5) ? 0.15 : 0;
+      return { match: true, reason: 'cross_language_family', score: 0.85 + firstBonus, cross: crossLast };
+    }
+
+    // KEY FIX: Customer name may be short (first + father)
+    // while bank has full 4-part name. Search ALL words cross-language.
+    const bankWords = bank.fullName.split(/\s+/).filter(w => w.length > 1);
+    const custWords = cust.fullName.split(/\s+/).filter(w => w.length > 1);
+    let matchedWords = 0;
+    let matchDetails = [];
+    for (const cw of custWords) {
+      for (const bw of bankWords) {
+        if (this.normalizeArabic(bw) === this.normalizeArabic(cw)) {
+          matchedWords++; matchDetails.push(cw + '=' + bw); break;
+        }
+        const cross = this.crossLanguageMatch(bw, cw);
+        if (cross && cross.score >= 0.7) {
+          matchedWords++; matchDetails.push(cw + '~' + bw); break;
+        }
+      }
+    }
+    if (matchedWords === custWords.length && custWords.length >= 2) {
+      return { match: true, reason: 'all_cust_words_in_bank', score: 0.90, details: matchDetails.join(', ') };
+    }
+    if (matchedWords >= 1) {
+      const crossFirst = this.crossLanguageMatch(bank.firstName, cust.firstName);
+      if (crossFirst && crossFirst.score >= 0.6) {
+        return { match: true, reason: 'partial_cross_match', score: 0.75, details: matchDetails.join(', ') };
+      }
+    }
+
+    // Fuzzy family name (for minor spelling differences)
+    const famSim = this.levenshteinSimilarity(bankFamily, custFamily);
+    if (famSim >= 0.80) {
+      return { match: true, reason: 'family_fuzzy', score: famSim };
+    }
+
+    // Phonetic family name match
+    const bankFamPhonetic = this.phoneticSkeleton(bank.lastName);
+    const custFamPhonetic = this.phoneticSkeleton(cust.lastName);
+    if (bankFamPhonetic.length >= 2 && bankFamPhonetic === custFamPhonetic) {
+      return { match: true, reason: 'family_phonetic', score: 0.85 };
+    }
+
+    return { match: false, reason: 'family_mismatch', bankFamily, custFamily };
+  }
+
+  // === CONFIDENCE SCORING ===
+
+  static calculateNameScore(bankName, customerName, aliases) {
+    // Try main name first
+    let bestResult = this._scoreNamePair(bankName, customerName);
+
+    // Try aliases
+    if (aliases && aliases.length > 0) {
+      for (const alias of aliases) {
+        const aliasName = alias.alias_name || alias;
+        const result = this._scoreNamePair(bankName, aliasName);
+        if (result.score > bestResult.score) {
+          bestResult = result;
+          bestResult.matchedVia = 'alias: ' + aliasName;
+        }
+      }
+    }
+
+    return bestResult;
+  }
+
+  static _scoreNamePair(bankName, customerName) {
+    if (!bankName || !customerName) return { score: 0, reason: 'empty' };
+
+    const bank = this.extractNameComponents(bankName);
+    const cust = this.extractNameComponents(customerName);
+
+    // Check family name gate first
+    const familyResult = this.familyNameMatch(bankName, customerName);
+    if (!familyResult.match) {
+      return { score: 0, reason: familyResult.reason, gate: 'family_failed' };
+    }
+
+    let score = 0;
+
+    // Component 1: Family Name (70% weight)
+    score += 0.70 * (familyResult.score || 1.0);
+
+    // Component 2: First Name (30% weight)
+    if (bank.firstName && cust.firstName) {
+      let firstSim = this.levenshteinSimilarity(
+        this.normalizeArabic(bank.firstName),
+        this.normalizeArabic(cust.firstName)
+      );
+
+      // Also try phonetic for first name
+      const phoneticSim = this.levenshteinSimilarity(
+        this.phoneticSkeleton(bank.firstName),
+        this.phoneticSkeleton(cust.firstName)
+      );
+      firstSim = Math.max(firstSim, phoneticSim);
+
+      // Penalty for common first names
+      if (this.COMMON_FIRST_NAMES.has(bank.firstName) || this.COMMON_FIRST_NAMES.has(cust.firstName)) {
+        firstSim *= 0.5;
+      }
+
+      score += 0.30 * firstSim;
+    }
+
+    // Penalty for single names
+    score -= (bank.penaltyScore || 0);
+    score -= (cust.penaltyScore || 0);
+
+    score = Math.max(0, Math.min(1, score));
+
+    return {
+      score,
+      reason: familyResult.reason,
+      familyScore: familyResult.score || 1.0,
+      bankComponents: bank,
+      custComponents: cust
+    };
+  }
+
+  // === PHONETIC SYSTEM ===
+
+  static arabicToPhonetic(name) {
+    if (!name) return '';
+    let n = name.normalize('NFKD');
+    const map = {
+      'ا':'a','أ':'a','إ':'a','آ':'a','ب':'b','ت':'t','ث':'th',
+      'ج':'j','ح':'h','خ':'kh','د':'d','ذ':'dh','ر':'r','ز':'z',
+      'س':'s','ش':'sh','ص':'s','ض':'d','ط':'t','ظ':'dh',
+      'ع':'a','غ':'gh','ف':'f','ق':'q','ك':'k','ل':'l',
+      'م':'m','ن':'n','ه':'h','ة':'h','و':'w','ي':'y','ى':'a',
+      'ؤ':'w','ئ':'y'
+    };
+    let result = '';
+    for (const ch of n) { result += map[ch] || ch; }
+    return result.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  static phoneticSkeleton(name) {
+    if (!name) return '';
+    let n = name.normalize('NFKD');
+    n = this.arabicToPhonetic(n).toLowerCase();
+    n = n.replace(/[^a-z\s]/g, '');
+    // Normalize similar sounds
+    n = n.replace(/ph/g, 'f');
+    n = n.replace(/gh/g, 'g');
+    n = n.replace(/kh/g, 'k');
+    n = n.replace(/th/g, 't');
+    n = n.replace(/dh/g, 'd');
+    n = n.replace(/sh/g, 's');
+    n = n.replace(/ch/g, 's');
+    n = n.replace(/ck/g, 'k');
+    n = n.replace(/aa/g, 'a');
+    n = n.replace(/ee/g, 'e');
+    n = n.replace(/oo/g, 'o');
+    n = n.replace(/ou/g, 'u');
+    // Remove vowels except word-initial
+    n = n.replace(/\b([aeiouy])/g, '_$1_');
+    n = n.replace(/[aeiouy]/g, '');
+    n = n.replace(/_([a-z])_/g, '$1');
+    n = n.replace(/(.)\1+/g, '$1');
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
+  // === UTILITY FUNCTIONS ===
+
+  static levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m + 1}, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  static levenshteinSimilarity(a, b) {
+    if (!a || !b) return 0;
+    if (a === b) return 1.0;
+    const maxLen = Math.max(a.length, b.length);
+    if (maxLen === 0) return 1.0;
+    return 1 - (this.levenshtein(a, b) / maxLen);
+  }
+
+  static wordSimilarity(text1, text2) {
+    const words1 = this.getWords(text1);
+    const words2 = this.getWords(text2);
+    if (words1.length === 0 || words2.length === 0) return 0;
+
+    let matched = 0;
+    const used = new Set();
+    for (const w1 of words1) {
+      for (let j = 0; j < words2.length; j++) {
+        if (used.has(j)) continue;
+        if (this.levenshteinSimilarity(w1, words2[j]) >= 0.75) {
+          matched++;
+          used.add(j);
+          break;
+        }
+      }
+    }
+    return matched / Math.max(words1.length, words2.length);
+  }
+
+  static isArabic(name) {
+    return /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(name);
+  }
+
+  static isLatin(name) {
+    return /[a-zA-Z]/.test(name) && !/[\u0600-\u06FF]/.test(name);
+  }
+
+  // === BACKWARD COMPATIBILITY ===
+  // Keep bestMatch for existing code that calls it
+
+  static bestMatch(bankName, customerName, altName, aliases) {
+    const allAliases = [];
+    if (altName) allAliases.push(altName);
+    if (aliases && Array.isArray(aliases)) allAliases.push(...aliases);
+
+    const result = this.calculateNameScore(bankName, customerName, allAliases);
+    return result.score;
+  }
+}
+
+module.exports = NameNormalizer;

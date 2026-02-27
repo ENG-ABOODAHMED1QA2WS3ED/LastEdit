@@ -1,0 +1,26 @@
+{
+  "name": "abu-kamil-pos",
+  "version": "1.0.0",
+  "description": "نظام نقاط البيع — سوبر ماركت أبو كميل",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "chcp 65001 >nul && electron .",
+    "build": "electron-builder",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pos",
+    "supermarket"
+  ],
+  "author": "Abu Kamil",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "electron": "^33.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

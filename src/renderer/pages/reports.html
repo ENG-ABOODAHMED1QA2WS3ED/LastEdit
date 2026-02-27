@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self';">
+    <title>التقارير - أبو كميل POS</title>
+    <link rel="stylesheet" href="../styles/reports.css">
+</head>
+<body>
+
+    <!-- ===== الشريط الجانبي ===== -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>أبو كميل POS</h2>
+            <span class="version">v5.0</span>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="index.html" class="nav-item">
+                <span class="nav-icon">🏠</span><span>الرئيسية</span>
+            </a>
+            <a href="invoice.html" class="nav-item">
+                <span class="nav-icon">🧾</span><span>فاتورة جديدة</span>
+            </a>
+            <a href="customers.html" class="nav-item">
+                <span class="nav-icon">👥</span><span>الزبائن</span>
+            </a>
+            <a href="products.html" class="nav-item">
+                <span class="nav-icon">📦</span><span>المنتجات</span>
+            </a>
+            <a href="debts.html" class="nav-item">
+                <span class="nav-icon">💰</span><span>الأرصدة والديون</span>
+            </a>
+            <a href="matching.html" class="nav-item">
+                <span class="nav-icon">🔄</span><span>المطابقة اليومية</span>
+            </a>
+            <a href="reports.html" class="nav-item active">
+                <span class="nav-icon">📊</span><span>التقارير</span>
+            </a>
+            <a href="settings.html" class="nav-item">
+                <span class="nav-icon">⚙️</span><span>الإعدادات</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <span class="user-icon">👤</span>
+                <span id="currentUser">المدير</span>
+            </div>
+            <button id="btnLogout" class="btn-logout">تسجيل خروج</button>
+        </div>
+    </aside>
+
+    <!-- ===== المحتوى الرئيسي ===== -->
+    <main class="main-content">
+
+        <!-- الشريط العلوي -->
+        <header class="top-bar">
+            <div class="page-title">
+                <h1>📊 التقارير</h1>
+                <p class="subtitle">تحليل المبيعات والأرباح والديون</p>
+            </div>
+            <div class="top-actions">
+                <button class="btn btn-outline" id="btnExport" title="تصدير">
+                    📥 تصدير
+                </button>
+                <button class="btn btn-outline" id="btnPrint" title="طباعة">
+                    🖨️ طباعة
+                </button>
+            </div>
+        </header>
+
+        <!-- ===== اختيار نوع التقرير والفترة ===== -->
+        <section class="report-controls">
+            <!-- نوع التقرير -->
+            <div class="report-type-selector">
+                <button class="report-type-btn active" data-report="sales">
+                    <span class="report-type-icon">💵</span>
+                    <span>المبيعات</span>
+                </button>
+                <button class="report-type-btn" data-report="products">
+                    <span class="report-type-icon">📦</span>
+                    <span>المنتجات</span>
+                </button>
+                <button class="report-type-btn" data-report="customers">
+                    <span class="report-type-icon">👥</span>
+                    <span>الزبائن</span>
+                </button>
+                <button class="report-type-btn" data-report="profits">
+                    <span class="report-type-icon">📈</span>
+                    <span>الأرباح</span>
+                </button>
+                <button class="report-type-btn" data-report="debts">
+                    <span class="report-type-icon">💰</span>
+                    <span>الديون</span>
+                </button>
+            </div>
+
+            <!-- الفترة الزمنية -->
+            <div class="period-selector">
+                <button class="period-btn active" data-period="today">اليوم</button>
+                <button class="period-btn" data-period="week">هذا الأسبوع</button>
+                <button class="period-btn" data-period="month">هذا الشهر</button>
+                <button class="period-btn" data-period="custom">فترة مخصصة</button>
+            </div>
+
+            <!-- فترة مخصصة -->
+            <div class="custom-period" id="customPeriod" style="display:none;">
+                <div class="date-range">
+                    <label>من:</label>
+                    <input type="date" id="dateFrom">
+                    <label>إلى:</label>
+                    <input type="date" id="dateTo">
+                    <button class="btn btn-primary btn-sm" id="btnApplyCustom">تطبيق</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== إحصائيات سريعة ===== -->
+        <section class="stats-bar" id="statsBar">
+            <div class="stat-card">
+                <div class="stat-icon">💵</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalSales">0.00 ₪</span>
+                    <span class="stat-label">إجمالي المبيعات</span>
+                </div>
+            </div>
+            <div class="stat-card success">
+                <div class="stat-icon">📈</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalProfit">0.00 ₪</span>
+                    <span class="stat-label">صافي الربح</span>
+                </div>
+            </div>
+            <div class="stat-card info">
+                <div class="stat-icon">🧾</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statInvoiceCount">0</span>
+                    <span class="stat-label">عدد الفواتير</span>
+                </div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-icon">💰</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotalDebts">0.00 ₪</span>
+                    <span class="stat-label">ديون الفترة</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== تقرير المبيعات ===== -->
+        <section class="report-section" id="report-sales">
+            <div class="section-header">
+                <h2>💵 تقرير المبيعات</h2>
+            </div>
+
+            <!-- توزيع طرق الدفع -->
+            <div class="payment-breakdown">
+                <h3>توزيع طرق الدفع</h3>
+                <div class="payment-bars">
+                    <div class="payment-bar-item">
+                        <div class="payment-bar-label">
+                            <span>💵 نقدي</span>
+                            <span id="cashAmount">0.00 ₪</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill cash" id="cashBar" style="width:0%"></div>
+                        </div>
+                        <span class="payment-percent" id="cashPercent">0%</span>
+                    </div>
+                    <div class="payment-bar-item">
+                        <div class="payment-bar-label">
+                            <span>🏦 تحويل بنكي</span>
+                            <span id="transferAmount">0.00 ₪</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill transfer" id="transferBar" style="width:0%"></div>
+                        </div>
+                        <span class="payment-percent" id="transferPercent">0%</span>
+                    </div>
+                    <div class="payment-bar-item">
+                        <div class="payment-bar-label">
+                            <span>💰 دين</span>
+                            <span id="debtAmount">0.00 ₪</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill debt" id="debtBar" style="width:0%"></div>
+                        </div>
+                        <span class="payment-percent" id="debtPercent">0%</span>
+                    </div>
+                    <div class="payment-bar-item">
+                        <div class="payment-bar-label">
+                            <span>💳 بطاقة</span>
+                            <span id="cardAmount">0.00 ₪</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill card" id="cardBar" style="width:0%"></div>
+                        </div>
+                        <span class="payment-percent" id="cardPercent">0%</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول الفواتير -->
+            <div class="table-wrapper">
+                <h3>تفاصيل الفواتير</h3>
+                <table class="data-table" id="salesTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>رقم الفاتورة</th>
+                            <th>الزبون</th>
+                            <th>المبلغ</th>
+                            <th>طريقة الدفع</th>
+                            <th>الحالة</th>
+                            <th>التاريخ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="salesTableBody">
+                    </tbody>
+                </table>
+                <div id="noSales" class="empty-state" style="display:none;">
+                    <span class="empty-icon">📋</span>
+                    <p>لا توجد مبيعات في هذه الفترة</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== تقرير المنتجات ===== -->
+        <section class="report-section" id="report-products" style="display:none;">
+            <div class="section-header">
+                <h2>📦 تقرير المنتجات</h2>
+            </div>
+
+            <!-- أعلى المنتجات مبيعاً -->
+            <div class="top-products">
+                <h3>🏆 أعلى 10 منتجات مبيعاً</h3>
+                <div class="products-ranking" id="productsRanking">
+                </div>
+            </div>
+
+            <!-- جدول المنتجات -->
+            <div class="table-wrapper">
+                <h3>تفاصيل مبيعات المنتجات</h3>
+                <table class="data-table" id="productsReportTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>المنتج</th>
+                            <th>الباركود</th>
+                            <th>الكمية المباعة</th>
+                            <th>سعر البيع</th>
+                            <th>سعر التكلفة</th>
+                            <th>إجمالي المبيعات</th>
+                            <th>إجمالي الربح</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productsReportBody">
+                    </tbody>
+                </table>
+                <div id="noProductsReport" class="empty-state" style="display:none;">
+                    <span class="empty-icon">📦</span>
+                    <p>لا توجد مبيعات منتجات في هذه الفترة</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== تقرير الزبائن ===== -->
+        <section class="report-section" id="report-customers" style="display:none;">
+            <div class="section-header">
+                <h2>👥 تقرير الزبائن</h2>
+            </div>
+
+            <div class="table-wrapper">
+                <h3>نشاط الزبائن</h3>
+                <table class="data-table" id="customersReportTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>الزبون</th>
+                            <th>الهاتف</th>
+                            <th>النوع</th>
+                            <th>عدد الفواتير</th>
+                            <th>إجمالي المشتريات</th>
+                            <th>الديون الحالية</th>
+                            <th>سقف الدين</th>
+                            <th>النسبة المستخدمة</th>
+                        </tr>
+                    </thead>
+                    <tbody id="customersReportBody">
+                    </tbody>
+                </table>
+                <div id="noCustomersReport" class="empty-state" style="display:none;">
+                    <span class="empty-icon">👥</span>
+                    <p>لا يوجد نشاط للزبائن في هذه الفترة</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== تقرير الأرباح ===== -->
+        <section class="report-section" id="report-profits" style="display:none;">
+            <div class="section-header">
+                <h2>📈 تقرير الأرباح</h2>
+            </div>
+
+            <!-- ملخص الأرباح -->
+            <div class="profit-summary">
+                <div class="profit-card">
+                    <span class="profit-label">إجمالي المبيعات</span>
+                    <span class="profit-value" id="profitTotalSales">0.00 ₪</span>
+                </div>
+                <div class="profit-card">
+                    <span class="profit-label">إجمالي التكلفة</span>
+                    <span class="profit-value cost" id="profitTotalCost">0.00 ₪</span>
+                </div>
+                <div class="profit-card highlight">
+                    <span class="profit-label">صافي الربح</span>
+                    <span class="profit-value" id="profitNet">0.00 ₪</span>
+                </div>
+                <div class="profit-card">
+                    <span class="profit-label">نسبة الربح</span>
+                    <span class="profit-value" id="profitMargin">0%</span>
+                </div>
+            </div>
+
+            <!-- جدول الأرباح حسب المنتج -->
+            <div class="table-wrapper">
+                <h3>الأرباح حسب المنتج</h3>
+                <table class="data-table" id="profitsTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>المنتج</th>
+                            <th>الكمية</th>
+                            <th>سعر البيع</th>
+                            <th>التكلفة</th>
+                            <th>الربح/وحدة</th>
+                            <th>إجمالي الربح</th>
+                            <th>نسبة الربح</th>
+                        </tr>
+                    </thead>
+                    <tbody id="profitsTableBody">
+                    </tbody>
+                </table>
+                <div id="noProfits" class="empty-state" style="display:none;">
+                    <span class="empty-icon">📈</span>
+                    <p>لا توجد بيانات أرباح في هذه الفترة</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== تقرير الديون ===== -->
+        <section class="report-section" id="report-debts" style="display:none;">
+            <div class="section-header">
+                <h2>💰 تقرير الديون</h2>
+            </div>
+
+            <!-- ملخص الديون -->
+            <div class="debt-summary">
+                <div class="debt-summary-card danger">
+                    <span class="debt-summary-icon">💰</span>
+                    <span class="debt-summary-value" id="debtSummaryTotal">0.00 ₪</span>
+                    <span class="debt-summary-label">إجمالي الديون المعلقة</span>
+                </div>
+                <div class="debt-summary-card warning">
+                    <span class="debt-summary-icon">⏳</span>
+                    <span class="debt-summary-value" id="debtSummaryPending">0.00 ₪</span>
+                    <span class="debt-summary-label">تحويلات معلقة</span>
+                </div>
+                <div class="debt-summary-card success">
+                    <span class="debt-summary-icon">✅</span>
+                    <span class="debt-summary-value" id="debtSummaryPaid">0.00 ₪</span>
+                    <span class="debt-summary-label">ديون مسددة (الفترة)</span>
+                </div>
+            </div>
+
+            <!-- جدول الديون -->
+            <div class="table-wrapper">
+                <h3>تفاصيل الديون حسب الزبون</h3>
+                <table class="data-table" id="debtsReportTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>الزبون</th>
+                            <th>عدد الديون</th>
+                            <th>إجمالي الدين</th>
+                            <th>سقف الدين</th>
+                            <th>النسبة المستخدمة</th>
+                            <th>الحالة</th>
+                        </tr>
+                    </thead>
+                    <tbody id="debtsReportBody">
+                    </tbody>
+                </table>
+                <div id="noDebtsReport" class="empty-state" style="display:none;">
+                    <span class="empty-icon">✅</span>
+                    <p>لا توجد ديون معلقة</p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ===== مودال التصدير ===== -->
+    <div class="modal-overlay" id="exportModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>📥 تصدير التقرير</h3>
+                <button class="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>اختر صيغة التصدير:</p>
+                <div class="export-options">
+                    <button class="export-btn" id="exportCSV">
+                        <span class="export-icon">📄</span>
+                        <span>CSV</span>
+                    </button>
+                    <button class="export-btn" id="exportPrint">
+                        <span class="export-icon">🖨️</span>
+                        <span>طباعة</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../scripts/reports.js"></script>
+</body>
+</html>

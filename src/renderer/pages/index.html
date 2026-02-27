@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>سوبر ماركت أبو كميل</title>
+    <link rel="stylesheet" href="../styles/main.css">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- الشريط الجانبي -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>سوبر ماركت</h2>
+                <h1>أبو كميل</h1>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <span class="nav-section-title">يومي</span>
+                    <a href="#" class="nav-item active" data-page="dashboard">
+                        <span class="nav-icon">🏠</span>
+                        <span class="nav-text">الرئيسية</span>
+                        <span class="nav-shortcut">F1</span>
+                    </a>
+                    <a href="#" class="nav-item nav-item-primary" data-page="invoice">
+                        <span class="nav-icon">➕</span>
+                        <span class="nav-text">فاتورة جديدة</span>
+                        <span class="nav-shortcut">F2</span>
+                    </a>
+                    <a href="#" class="nav-item" data-page="balances">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">الأرصدة</span>
+                        <span class="nav-shortcut">F3</span>
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <span class="nav-section-title">مالي</span>
+                    <a href="#" class="nav-item" data-page="matching">
+                        <span class="nav-icon">🔄</span>
+                        <span class="nav-text">المطابقة</span>
+                        <span class="nav-shortcut">F4</span>
+                        <span class="nav-badge badge-yellow" id="badgeMatching">0</span>
+                    </a>
+                    <a href="#" class="nav-item" data-page="debts">
+                        <span class="nav-icon">💰</span>
+                        <span class="nav-text">الذمم</span>
+                        <span class="nav-shortcut">F5</span>
+                        <span class="nav-badge badge-red" id="badgeDebts">0</span>
+                    </a>
+                    <a href="#" class="nav-item" data-page="reports">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">التقارير</span>
+                        <span class="nav-shortcut">F6</span>
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <span class="nav-section-title">نظام</span>
+                    <a href="#" class="nav-item" data-page="closing">
+                        <span class="nav-icon">🔒</span>
+                        <span class="nav-text">إقفال اليومية</span>
+                        <span class="nav-shortcut">F9</span>
+                    </a>
+                    <a href="#" class="nav-item" data-page="settings">
+                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-text">المزيد</span>
+                        <span class="nav-shortcut">F10</span>
+                    </a>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- المحتوى الرئيسي -->
+        <main class="main-content">
+
+            <!-- الشريط العلوي -->
+            <header class="top-bar">
+                <div class="top-bar-right">
+                    <h3 id="pageTitle">الرئيسية</h3>
+                </div>
+                <div class="top-bar-left">
+                    <span class="connection-status connected">🟢 متصل</span>
+                    <span class="current-time" id="currentTime">00:00</span>
+                    <span class="today-sales" id="todaySalesHeader">₪0 مبيعات اليوم</span>
+                </div>
+            </header>
+
+            <!-- محتوى الصفحة -->
+            <div class="page-content" id="pageContent">
+
+                <!-- بطاقات الإحصائيات -->
+                <div class="stats-grid">
+                    <div class="stat-card stat-primary">
+                        <div class="stat-icon">💰</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statTotalSales">0.00₪</div>
+                            <div class="stat-label">مبيعات اليوم</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-success">
+                        <div class="stat-icon">🧾</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statInvoiceCount">0</div>
+                            <div class="stat-label">عدد الفواتير</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-info">
+                        <div class="stat-icon">💵</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statCash">0.00₪</div>
+                            <div class="stat-label">نقد</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-warning">
+                        <div class="stat-icon">🏦</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statTransfers">0.00₪</div>
+                            <div class="stat-label">تحويلات</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-danger">
+                        <div class="stat-icon">📝</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statDebts">0.00₪</div>
+                            <div class="stat-label">ديون</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-pending">
+                        <div class="stat-icon">⏳</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="statPending">0</div>
+                            <div class="stat-label">معلّقة</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- أزرار الاختصارات -->
+                <div class="quick-actions">
+                    <h3 class="section-title">اختصارات سريعة</h3>
+                    <div class="actions-grid">
+                        <button class="action-card action-primary" data-page="invoice">
+                            <span class="action-icon">➕</span>
+                            <span class="action-text">فاتورة جديدة</span>
+                            <span class="action-hint">F2</span>
+                        </button>
+                        <button class="action-card action-blue" data-page="balances">
+                            <span class="action-icon">📊</span>
+                            <span class="action-text">الأرصدة</span>
+                            <span class="action-hint">F3</span>
+                        </button>
+                        <button class="action-card action-yellow" data-page="matching">
+                            <span class="action-icon">🔄</span>
+                            <span class="action-text">المطابقة</span>
+                            <span class="action-hint">F4</span>
+                        </button>
+                        <button class="action-card action-green" data-page="reports">
+                            <span class="action-icon">📈</span>
+                            <span class="action-text">التقارير</span>
+                            <span class="action-hint">F6</span>
+                        </button>
+                        <button class="action-card action-purple" data-page="closing">
+                            <span class="action-icon">🔒</span>
+                            <span class="action-text">إقفال اليومية</span>
+                            <span class="action-hint">F9</span>
+                        </button>
+                        <button class="action-card action-gray" data-page="settings">
+                            <span class="action-icon">⚙️</span>
+                            <span class="action-text">الإدارة</span>
+                            <span class="action-hint">F10</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- آخر الفواتير -->
+                <div class="recent-section">
+                    <h3 class="section-title">آخر الفواتير</h3>
+                    <div class="recent-table-container">
+                        <table class="recent-table">
+                            <thead>
+                                <tr>
+                                    <th>رقم الفاتورة</th>
+                                    <th>الزبون</th>
+                                    <th>المبلغ</th>
+                                    <th>الحالة</th>
+                                    <th>التاريخ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recentInvoicesBody">
+                                <tr>
+                                    <td colspan="5" style="text-align:center; padding:30px; color:#7f8c8d;">جاري التحميل...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="../scripts/app.js"></script>
+</body>
+</html>
