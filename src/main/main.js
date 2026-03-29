@@ -376,36 +376,67 @@ ipcMain.handle('get-app-info', async () => {
     });
 
     // ==================== إعدادات المتجر ====================
+    // Auto-detect store_settings format: key-value OR single-row with columns
+    const _storeSettingsCols = db.pragma('table_info(store_settings)').map(c => c.name);
+    const _isKeyValueSettings = _storeSettingsCols.includes('key') && _storeSettingsCols.includes('value') && !_storeSettingsCols.includes('store_name');
+
     ipcMain.handle('get-store-settings', async () => {
         try {
-            // store_settings is a key-value table: (key, value) pairs
-            const rows = db.prepare('SELECT key, value FROM store_settings').all();
-            const settings = {};
-            for (const row of rows) {
-                settings[row.key] = row.value;
+            if (_isKeyValueSettings) {
+                // Key-value format: each row is (key, value)
+                const rows = db.prepare('SELECT key, value FROM store_settings').all();
+                const settings = {};
+                for (const row of rows) { settings[row.key] = row.value; }
+                return { success: true, settings };
+            } else {
+                // Single-row format: columns are store_name, phone, etc.
+                const settings = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
+                return { success: true, settings: settings || {} };
             }
-            return { success: true, settings };
         } catch (error) { return { success: false, error: error.message }; }
     });
 
     ipcMain.handle('update-store-settings', async (event, data) => {
         try {
             const allowed = ['store_name', 'phone', 'address', 'tax_number', 'currency', 'receipt_header', 'receipt_footer', 'owner_pin', 'default_debt_ceiling'];
-            const upsert = db.prepare(`
-                INSERT INTO store_settings (key, value, updated_at)
-                VALUES (?, ?, datetime('now','localtime'))
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-            `);
-            let updated = 0;
-            db.transaction(() => {
+            if (_isKeyValueSettings) {
+                // Key-value format: upsert each setting
+                const upsert = db.prepare(`
+                    INSERT INTO store_settings (key, value, updated_at)
+                    VALUES (?, ?, datetime('now','localtime'))
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                `);
+                let updated = 0;
+                db.transaction(() => {
+                    for (const key of allowed) {
+                        if (data[key] !== undefined) {
+                            upsert.run(key, String(data[key]));
+                            updated++;
+                        }
+                    }
+                })();
+                if (updated === 0) return { success: false, error: 'لا توجد بيانات للتحديث' };
+            } else {
+                // Single-row format: UPDATE columns directly
+                const current = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
+                if (!current) {
+                    db.prepare("INSERT INTO store_settings (id) VALUES (1)").run();
+                }
+                const fields = [];
+                const values = [];
                 for (const key of allowed) {
-                    if (data[key] !== undefined) {
-                        upsert.run(key, String(data[key]));
-                        updated++;
+                    if (data[key] !== undefined && _storeSettingsCols.includes(key)) {
+                        fields.push(key + ' = ?');
+                        values.push(data[key]);
                     }
                 }
-            })();
-            if (updated === 0) return { success: false, error: 'لا توجد بيانات للتحديث' };
+                if (fields.length === 0) return { success: false, error: 'لا توجد بيانات للتحديث' };
+                if (_storeSettingsCols.includes('updated_at')) {
+                    fields.push("updated_at = datetime('now','localtime')");
+                }
+                values.push(1);
+                db.prepare('UPDATE store_settings SET ' + fields.join(', ') + ' WHERE id = ?').run(...values);
+            }
             return { success: true };
         } catch (error) { return { success: false, error: error.message }; }
     });
@@ -771,8 +802,15 @@ ipcMain.handle('get-app-info', async () => {
 
     ipcMain.handle('verify-owner-pin', async (event, pin) => {
         try {
-            const row = db.prepare("SELECT value FROM store_settings WHERE key = 'owner_pin'").get();
-            return { success: true, valid: row && row.value === pin };
+            let storedPin = null;
+            if (_isKeyValueSettings) {
+                const row = db.prepare("SELECT value FROM store_settings WHERE key = 'owner_pin'").get();
+                storedPin = row ? row.value : null;
+            } else {
+                const row = db.prepare('SELECT owner_pin FROM store_settings WHERE id = 1').get();
+                storedPin = row ? row.owner_pin : null;
+            }
+            return { success: true, valid: storedPin === pin };
         } catch (error) {
             return { success: false, error: error.message };
         }
