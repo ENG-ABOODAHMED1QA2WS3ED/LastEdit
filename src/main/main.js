@@ -68,7 +68,10 @@ function createWindow() {
         mainWindow.show();
     });
 
-    mainWindow.webContents.openDevTools();
+    // Open DevTools only in development mode
+    if (process.argv.includes('--dev') || process.env.NODE_ENV === 'development') {
+        mainWindow.webContents.openDevTools();
+    }
 
     mainWindow.on('closed', () => {
         mainWindow = null;
@@ -375,30 +378,34 @@ ipcMain.handle('get-app-info', async () => {
     // ==================== إعدادات المتجر ====================
     ipcMain.handle('get-store-settings', async () => {
         try {
-            const settings = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
-            return { success: true, settings: settings || {} };
+            // store_settings is a key-value table: (key, value) pairs
+            const rows = db.prepare('SELECT key, value FROM store_settings').all();
+            const settings = {};
+            for (const row of rows) {
+                settings[row.key] = row.value;
+            }
+            return { success: true, settings };
         } catch (error) { return { success: false, error: error.message }; }
     });
 
     ipcMain.handle('update-store-settings', async (event, data) => {
         try {
-            const current = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
-            if (!current) {
-                db.prepare("INSERT OR IGNORE INTO store_settings (id, key, value) VALUES (1, '_config', 'default')").run();
-            }
-            const fields = [];
-            const values = [];
             const allowed = ['store_name', 'phone', 'address', 'tax_number', 'currency', 'receipt_header', 'receipt_footer', 'owner_pin', 'default_debt_ceiling'];
-            for (const key of allowed) {
-                if (data[key] !== undefined) {
-                    fields.push(key + ' = ?');
-                    values.push(data[key]);
+            const upsert = db.prepare(`
+                INSERT INTO store_settings (key, value, updated_at)
+                VALUES (?, ?, datetime('now','localtime'))
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            `);
+            let updated = 0;
+            db.transaction(() => {
+                for (const key of allowed) {
+                    if (data[key] !== undefined) {
+                        upsert.run(key, String(data[key]));
+                        updated++;
+                    }
                 }
-            }
-            if (fields.length === 0) return { success: false, error: 'لا توجد بيانات للتحديث' };
-            fields.push("updated_at = datetime('now','localtime')");
-            values.push(1);
-            db.prepare('UPDATE store_settings SET ' + fields.join(', ') + ' WHERE id = ?').run(...values);
+            })();
+            if (updated === 0) return { success: false, error: 'لا توجد بيانات للتحديث' };
             return { success: true };
         } catch (error) { return { success: false, error: error.message }; }
     });
@@ -602,7 +609,11 @@ ipcMain.handle('get-app-info', async () => {
                 ORDER BY p.created_at DESC
             `).all(customerId);
 
-            const totalDebt = debts.reduce((sum, d) => sum + d.amount, 0);
+            // Calculate remaining debt: amount minus any partial payments (paid_amount)
+            const totalDebt = debts.reduce((sum, d) => {
+                const remaining = d.amount - (d.paid_amount || 0);
+                return sum + Math.max(remaining, 0);
+            }, 0);
             return { success: true, debts, total_debt: totalDebt };
         } catch (error) {
             return { success: false, error: error.message };
@@ -760,8 +771,8 @@ ipcMain.handle('get-app-info', async () => {
 
     ipcMain.handle('verify-owner-pin', async (event, pin) => {
         try {
-            const settings = db.prepare('SELECT owner_pin FROM store_settings WHERE id = 1').get();
-            return { success: true, valid: settings && settings.owner_pin === pin };
+            const row = db.prepare("SELECT value FROM store_settings WHERE key = 'owner_pin'").get();
+            return { success: true, valid: row && row.value === pin };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -1637,9 +1648,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
         } catch (err) { return []; }
     });
 
-    console.log(' تم تسجيل جميع IPC handlers (v6.0 - المطابقة الذكية)');
-}
-
     // ==================== التحويلات المتأخرة ====================
     ipcMain.handle('get-overdue-transfers', async () => {
         try {
@@ -1673,12 +1681,13 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
   // === API لقراءة جدول التعلم ===
   ipcMain.handle('get-learning-data', async () => {
     try {
-      const rows = db.prepare('SELECT nl.*, c.name as customer_name FROM name_learning nl LEFT JOIN customers c ON c.id = nl.system_customer_id ORDER BY nl.use_count DESC').all();
+      const rows = db.prepare('SELECT nl.*, c.name as customer_name FROM name_learning nl LEFT JOIN customers c ON c.id = nl.customer_id ORDER BY nl.use_count DESC').all();
       return { success: true, data: rows };
     } catch(e) { return { success: false, error: e.message }; }
   });
 
-  // === فحص الرقم المرجعي ===
+    console.log(' تم تسجيل جميع IPC handlers (v6.0 - المطابقة الذكية)');
+}
 
 // ==================== نظام التفعيل ====================
 
