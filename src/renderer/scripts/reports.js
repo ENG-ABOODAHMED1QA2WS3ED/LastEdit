@@ -412,28 +412,25 @@ function renderSalesReport() {
     renderSalesTable(invoices);
 }
 
-function renderPaymentBreakdown(invoices) {
-    // حساب المجاميع حسب طريقة الدفع من البيانات المتاحة
+async function renderPaymentBreakdown(invoices) {
     const totalSales = invoices.reduce((sum, inv) => sum + (parseFloat(inv.total) || 0), 0);
-
-    // نستخدم الإحصائيات من API إذا متوفرة، وإلا نقدّر من الفواتير
     let cashTotal = 0, transferTotal = 0, debtTotal = 0, cardTotal = 0;
 
-    // محاولة جلب من إحصائيات اليوم إذا الفترة هي اليوم
-    if (currentPeriod === 'today') {
-        window.api.getTodayStats().then(result => {
+    try {
+        const range = getDateRange();
+        if (window.api.getPaymentStats) {
+            const result = await window.api.getPaymentStats(range.from, range.to);
             if (result && result.success && result.stats) {
-                const stats = result.stats;
-                cashTotal = parseFloat(stats.cash_total) || 0;
-                transferTotal = parseFloat(stats.transfers_total) || 0;
-                debtTotal = parseFloat(stats.debts_total) || 0;
-                cardTotal = 0;
-                updatePaymentBars(totalSales, cashTotal, transferTotal, debtTotal, cardTotal);
+                cashTotal = parseFloat(result.stats.cash_total) || 0;
+                cardTotal = parseFloat(result.stats.card_total) || 0;
+                transferTotal = parseFloat(result.stats.transfers_total) || 0;
+                debtTotal = parseFloat(result.stats.debts_total) || 0;
             }
-        }).catch(() => {});
+        }
+    } catch (e) {
+        console.warn('\u062E\u0637\u0623 \u062C\u0644\u0628 \u0625\u062D\u0635\u0627\u0626\u064A\u0627\u062A \u0627\u0644\u062F\u0641\u0639:', e);
     }
 
-    // عرض أولي
     updatePaymentBars(totalSales, cashTotal, transferTotal, debtTotal, cardTotal);
 }
 

@@ -22,6 +22,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // تحميل الاقتراحات المعلقة تلقائياً عند فتح الصفحة
   // الصفحة جاهزة - لا نعرض شيء حتى يرفع المستخدم كشف
+
+  // === زر مسح الكشوفات البنكية القديمة ===
+  const btnClearOldBank = document.getElementById('btnClearOldBank');
+  if (btnClearOldBank) {
+    btnClearOldBank.addEventListener('click', async () => {
+      const confirmed = confirm('هل أنت متأكد من مسح جميع الكشوفات البنكية');
+      if (!confirmed) return;
+      try {
+        btnClearOldBank.disabled = true;
+        btnClearOldBank.textContent = 'جاري المسح...';
+        const result = await window.api.clearOldBankData();
+        if (result && result.success) {
+          showToast('تم مسح جميع الكشوفات البنكية بنجاح', 'success');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showToast('فشل المسح: ' + (result?.error || ''), 'error');
+        }
+      } catch (err) {
+        showToast('خطأ: ' + err.message, 'error');
+      } finally {
+        btnClearOldBank.disabled = false;
+        btnClearOldBank.textContent = 'مسح الكشوفات';
+      }
+    });
+    console.log('btnClearOldBank listener added');
+  }
 });
 
 async function loadPendingMatches() {
@@ -393,7 +419,7 @@ async function handleFileUpload(e) {
   }
 
   // اعادة تعيين المدخل
-  e.target.value = '';
+  e.target.value = null; e.target.type = ''; e.target.type = 'file';
 }
 
 function parseCSVLine(line) {
@@ -465,6 +491,41 @@ function renderResults(result) {
     html += '</div>';
   }
 
+  // مطابقات مجمعة
+  if (result.grouped_matches && result.grouped_matches.length > 0) {
+    html += '<div class="section"><h4>مطابقات مجمعة - تحتاج تأكيدك</h4>';
+    for (const g of result.grouped_matches) {
+      const bankId = g.bankTxn ? g.bankTxn.id : 0;
+      const pIds = (g.payment_ids || []).join(",");
+      let itemsHtml = (g.payments || []).map(p =>
+        '<div class="grouped-item">' + (p.customer_name||"") + ' - ' + (p.total_amount||p.amount||0) + ' </div>'
+      ).join("");
+      html += '<div class="match-card grouped">'+
+        '<div class="card-header">'+
+          '<span class="score medium">' + (g.confidence||0) + '/100</span>'+
+          '<span class="match-type-badge">مجمعة (' + (g.payment_ids||[]).length + ' فواتير)</span>'+
+        '</div>'+
+        '<div class="card-body">'+
+          '<div class="bank-side">'+
+            '<h4>التحويل البنكي</h4>'+
+            '<div class="info-row">المحوّل: ' + (g.bankTxn?g.bankTxn.payer_name:"") + '</div>'+
+            '<div class="info-row">المبلغ: ' + (g.bankTxn?g.bankTxn.amount:0) + ' </div>'+
+          '</div>'+
+          '<div class="payment-side">'+
+            '<h4>الفواتير</h4>'+
+            itemsHtml +
+            '<div class="grouped-total">المجموع: ' + (g.total||0) + '  | الفرق: ' + (g.diff||0) + ' </div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="card-footer">'+
+          '<button class="btn btn-success" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + pIds + '">قبول المجمعة</button>'+
+          '<button class="btn btn-danger" data-action="reject" data-bank-id="' + bankId + '" data-payment-ids="' + pIds + '">رفض</button>'+
+        '</div>'+
+      '</div>';
+    }
+    html += '</div>';
+  }
+
   // غير مطابقة - بنكية
   // unmatched bank with actions
   if (result.unmatched_bank && result.unmatched_bank.length > 0) {
@@ -492,11 +553,16 @@ function renderResults(result) {
   if (result.unmatched_payments && result.unmatched_payments.length > 0) {
     html += '<div class="section"><h4>دفعات معلقة غير مطابقة</h4>';
     for (const p of result.unmatched_payments) {
+      const amt = p.amount || p.total_amount || p.invoice_amount || 0;
+      const methodLabels = {'transfer':'تحويل بنكي','wallet':'محفظة','debt':'دين','card':'بطاقة','cash':'نقد'};
+      const methodLabel = methodLabels[p.method] || p.method || 'غير محدد';
+      const ref = p.bank_reference ? `<span class="ref">مرجع: ${p.bank_reference}</span>` : '';
       html += `<div class="match-card unmatched">
         <div class="card-body">
           <span class="name">${p.customer_name || 'غير معروف'}</span>
-          <span class="amount">${p.amount} ₪</span>
-          <span class="method">${p.method === 'transfer' ? 'تحويل' : 'دين'}</span>
+          <span class="amount">${amt} </span>
+          <span class="method">${methodLabel}</span>
+          ${ref}
         </div>
       </div>`;
     }
@@ -526,42 +592,211 @@ function renderResults(result) {
 
 function renderMatchCard(m, type) {
   const bt = m.bankTxn || {};
-  const payments = m.payments || (m.payment_id ? [{ payment_id: m.payment_id, customer_name: m.customer_name, amount: m.invoice_amount || m.amount_paid, method: m.method || 'transfer' }] : []);
-  const score = m.confidence || m.score || 0;
-  const scoreClass = score >= 90 ? 'high' : score >= 60 ? 'medium' : 'low';
-  const paymentIds = payments.map(p => p.payment_id || p.id).join(',');
+  const bd = m.breakdown || {};
+  const score = m.confidence || 0;
+  const bankId = m.bank_transaction_id || bt.id;
+  const paymentId = m.payment_id || '';
 
-  let paymentsList = payments.map(p =>
-    `<div class="payment-item">${p.customer_name || p.customer || ''} - ${p.amount}₪ (${p.method === 'transfer' ? 'تحويل' : 'دين'})</div>`
-  ).join('');
+  // مستوى الأمان
+  const sec = m.security_level || 'normal';
+  let secIcon = '', secText = '', secClass = 'safe';
+  if (sec === 'warning') { secIcon = ''; secText = 'تحذير'; secClass = 'warning'; }
+  else if (sec === 'danger') { secIcon = ''; secText = 'خطر'; secClass = 'danger'; }
+  else { secIcon = ''; secText = 'آمن'; secClass = 'safe'; }
 
-  let buttons = '';
-  if (type === 'suggestion') {
-    buttons = `
-      <button class="btn btn-success" data-action="accept" data-bank-id="${m.bank_transaction_id || bt.id}" data-payment-ids="${paymentIds}">قبول</button>
-      <button class="btn btn-danger" data-action="reject" data-bank-id="${m.bank_transaction_id || bt.id}" data-payment-ids="${paymentIds}">رفض</button>
-    `;
+  // نوع المطابقة
+  const typeLabels = { full: 'كاملة', partial: 'جزئية', over: 'زيادة', grouped_complementary: 'مجمعة', multi_transfer: 'تحويلات متعددة' };
+  const matchLabel = typeLabels[m.match_type] || 'فردي';
+
+  // لون الثقة
+  const scoreClass = score >= 85 ? 'high' : score >= 65 ? 'medium' : 'low';
+
+  // تحذيرات
+  let warningsHtml = '';
+  const warns = [];
+  if (m.date_category === 'delayed') warns.push(' تحويل متأخر (' + (m.days_diff||0) + ' يوم)');
+  if (m.date_category === 'very_delayed') warns.push(' تحويل متأخر جداً (' + (m.days_diff||0) + ' يوم)');
+  if (bd.name_score && bd.name_score < 60) warns.push(' تطابق ضعيف في الاسم');
+  if (m.phone_matched) warns.push(' تم التطابق عبر رقم الجوال');
+  if (warns.length > 0) {
+    warningsHtml = '<div class="match-warnings">' + warns.map(w => '<div class="warn-item">' + w + '</div>').join('') + '</div>';
   }
 
-  return `
-    <div class="match-card ${type}">
-      <div class="card-header">
-        <span class="score ${scoreClass}">${score}/100</span>
-        <span class="match-type">${m.type === 'combined' ? 'تجميعي' : m.type === 'aggregate' ? 'تجميعي' : 'فردي'}</span>
-      </div>
-      <div class="card-body">
-        <div class="bank-side">
-          <strong>عملية بنكية #${m.bank_transaction_id || bt.id}:</strong> ${bt.payer_name || bt.parsed_name || bt.name || ''} - ${bt.amount}₪
-          <div class="date">${bt.parsed_date || bt.date || ''}</div>
-        </div>
-        <div class="payment-side">
-          <strong>دفعات:</strong>
-          ${paymentsList}
-        </div>
-      </div>
-      <div class="card-footer">${buttons}</div>
-    </div>
-  `;
+  // دفعة جزئية
+  
+  // === Multi-transfer display ===
+  let multiTransferHtml = '';
+  if (m.match_type === 'multi_transfer' && m.bank_transfers && m.bank_transfers.length > 0) {
+    const totalTransferred = m.bank_transfers.reduce((s, t) => s + (t.amount || 0), 0);
+    const invoiceAmt = m.invoice_amount || 0;
+    const diff = totalTransferred - invoiceAmt;
+    
+    multiTransferHtml = '<div class="multi-transfer-box">' +
+      '<div class="multi-transfer-title">تحويلات متعددة من نفس الزبون</div>';
+    
+    m.bank_transfers.forEach(function(t, i) {
+      multiTransferHtml += '<div class="multi-transfer-item">' +
+        'تحويل ' + (i+1) + ': <strong>' + (t.amount || 0).toFixed(2) + ' ₪</strong>' +
+        '</div>';
+    });
+    
+    multiTransferHtml += '<div class="multi-transfer-total">' +
+      'المجموع: <strong>' + totalTransferred.toFixed(2) + ' ₪</strong> | ' +
+      'الفاتورة: <strong>' + invoiceAmt.toFixed(2) + ' ₪</strong>';
+    
+    if (diff > 0.5) {
+      multiTransferHtml += ' | <span class="excess-amount">زيادة: +' + diff.toFixed(2) + ' ₪ (رصيد للزبون)</span>';
+    } else if (diff < -0.5) {
+      multiTransferHtml += ' | <span class="shortage-amount">نقص: ' + Math.abs(diff).toFixed(2) + ' ₪</span>';
+    } else {
+      multiTransferHtml += ' | <span class="exact-amount">تطابق تام! ✔</span>';
+    }
+    
+    multiTransferHtml += '</div></div>';
+  }
+
+  // فواتير الزبون الكاملة
+  let custInvoicesHtml = '';
+  if (m.all_customer_invoices && m.all_customer_invoices.length > 1) {
+    const totalInv = m.total_customer_invoices_amount || 0;
+    const bankAmt = m.amount_paid || 0;
+    const totalShortage = totalInv - bankAmt;
+    custInvoicesHtml = '<div class="customer-invoices-box">' +
+      '<div class="cust-inv-title">جميع فواتير ' + (m.customer_name || 'الزبون') + ' (' + m.all_customer_invoices.length + ')</div>';
+    m.all_customer_invoices.forEach(function(inv, i) {
+      const isMatched = inv.id === (m.payment_id || m.payment_ids?.[0]);
+      custInvoicesHtml += '<div class="cust-inv-item' + (isMatched ? ' matched' : '') + '">' +
+        '<span>' + (i+1) + '. </span>' +
+        '<span>فاتورة ' + (inv.invoice_id || inv.id || '') + '</span> - ' +
+        '<strong>' + (inv.amount || 0).toFixed(2) + ' \u20AA</strong>' +
+        (isMatched ? ' <span class="matched-badge">(\u2190 مطابقة حالية)</span>' : '') +
+      '</div>';
+    });
+    custInvoicesHtml += '<div class="cust-inv-summary">' +
+      '\u2211 المجموع: <strong>' + totalInv.toFixed(2) + ' \u20AA</strong> | التحويل: <strong>' + bankAmt.toFixed(2) + ' \u20AA</strong>';
+    if (totalShortage > 0.5) {
+      custInvoicesHtml += ' | <span class="total-shortage">النقص الكلي: ' + totalShortage.toFixed(2) + ' \u20AA</span>';
+    } else if (totalShortage < -0.5) {
+      custInvoicesHtml += ' | <span class="total-excess">زيادة: ' + Math.abs(totalShortage).toFixed(2) + ' \u20AA</span>';
+    }
+    custInvoicesHtml += '</div></div>';
+  }
+
+  let partialHtml = '';
+  {
+    let effectiveInvoiceTotal = (m.match_type === 'grouped_complementary' && m.grouped_payments) ?
+      m.grouped_payments.reduce(function(sum, p) { return sum + (p.amount || 0); }, 0) : (m.invoice_amount || 0);
+    let effectivePaid = m.amount_paid || (m.bankTxn ? m.bankTxn.amount : 0);
+    let effectiveShortage = Math.max(0, effectiveInvoiceTotal - effectivePaid);
+    let shortagePct = effectiveInvoiceTotal > 0 ? (effectiveShortage / effectiveInvoiceTotal * 100) : 0;
+    
+    if (effectiveShortage > 0.5) {
+      let sev = shortagePct > 15 ? 'danger' : shortagePct > 5 ? 'warning' : 'safe';
+      let icon = sev === 'danger' ? '\u274C' : '\u26A0\uFE0F';
+      let txt = sev === 'danger' ? '\u0646\u0642\u0635 \u0643\u0628\u064A\u0631' : sev === 'warning' ? '\u0646\u0642\u0635 \u0645\u062A\u0648\u0633\u0637' : '\u0646\u0642\u0635 \u0628\u0633\u064A\u0637';
+      let paidPct = (effectivePaid / effectiveInvoiceTotal * 100).toFixed(0);
+      
+      partialHtml = '<div class="partial-box ' + sev + '">' +
+        '<div class="partial-header">' + icon + ' <strong>' + txt + '!</strong></div>' +
+        '<div class="partial-details">' +
+          '<div>\u0627\u0644\u0645\u0637\u0644\u0648\u0628: <strong>' + effectiveInvoiceTotal.toFixed(2) + ' \u20AA</strong></div>' +
+          '<div>\u0627\u0644\u0645\u062D\u0648\u0651\u0644: <strong>' + effectivePaid.toFixed(2) + ' \u20AA</strong></div>' +
+          '<div class="shortage-highlight">\u0627\u0644\u0645\u062A\u0628\u0642\u064A: <strong>' + effectiveShortage.toFixed(2) + ' \u20AA</strong></div>' +
+        '</div>' +
+        '<div class="partial-progress"><div class="partial-bar ' + sev + '" style="width:' + paidPct + '%"></div>' +
+          '<span>' + paidPct + '% \u0645\u062F\u0641\u0648\u0639</span></div>' +
+        '<div class="security-tag ' + sev + '">' +
+          (sev === 'danger' ? '\u063A\u064A\u0631 \u0622\u0645\u0646' : sev === 'warning' ? '\u062A\u062D\u0642\u0642 \u0645\u0637\u0644\u0648\u0628' : '\u0622\u0645\u0646 \u0646\u0633\u0628\u064A\u0627\u064B') +
+        '</div></div>';
+    }
+  }
+  if (m.match_type === 'partial' && m.shortage_amount > 0) {
+    const pct = m.invoice_amount > 0 ? ((m.shortage_amount / m.invoice_amount) * 100).toFixed(1) : '0';
+    partialHtml = '<div class="partial-box ' + secClass + '">' +
+      '<div class="partial-title">' + secIcon + ' دفعة جزئية</div>' +
+      '<div class="partial-nums">المطلوب: ' + (m.invoice_amount||0).toFixed(2) + ' | المحوّل: ' + (m.amount_paid||0).toFixed(2) + ' | نقص: ' + (m.shortage_amount||0).toFixed(2) + '</div>' +
+      '<div class="security-tag ' + secClass + '">' + secIcon + ' ' + secText + ' (نقص ' + pct + '%)</div>' +
+      '</div>';
+  }
+
+  // فواتير مجمعة
+  let groupedHtml = '';
+  if (m.match_type === 'grouped_complementary' && m.grouped_payments && m.grouped_payments.length > 0) {
+    const totalGrouped = m.grouped_payments.reduce(function(s, p) { return s + (p.amount || 0); }, 0);
+    groupedHtml = '<div class="grouped-invoices-box">' +
+      '<div class="grouped-title">\u2709 فواتير مجمعة (' + m.grouped_payments.length + ')</div>';
+    m.grouped_payments.forEach(function(gp, idx) {
+      groupedHtml += '<div class="grouped-invoice-item">' +
+
+        '<span class="gi-num">' + (idx + 1) + '.</span> ' +
+        '<span class="gi-name">' + (gp.customer_name || '') + '</span> - ' +
+        '<span class="gi-amount">' + (gp.amount || 0) + ' \u20AA</span>' +
+      '</div>';
+    });
+    groupedHtml += '<div class="grouped-invoice-total">\u2211 المجموع: ' + totalGrouped + ' \u20AA' +
+      (bt.amount && Math.abs(bt.amount - totalGrouped) < 0.5 ? ' = مبلغ التحويل \u2714' : '') +
+      '</div></div>';
+  }
+
+  // بدائل
+  let altHtml = '';
+  if (m.alternatives && m.alternatives.length > 0) {
+    altHtml = '<div class="alt-section"><div class="alt-title"> بدائل:</div>';
+    m.alternatives.forEach(function(alt, i) {
+      altHtml += '<div class="alt-item">' + (i+1) + '. ' + (alt.customer_name||'') + ' (' + (alt.confidence||0) + '%) ' +
+        '<button class="btn-alt" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + (alt.payment_id||'') + '">اختيار</button></div>';
+    });
+    altHtml += '</div>';
+  }
+
+  // أزرار
+  let btns = '';
+  if (type === 'suggestion') {
+    btns = '<button class="btn btn-success" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + ((m.payment_ids && m.payment_ids.length > 0) ? m.payment_ids.join(',') : paymentId) + '"> قبول</button>' +
+           '<button class="btn btn-danger" data-action="reject" data-bank-id="' + bankId + '" data-payment-ids="' + ((m.payment_ids && m.payment_ids.length > 0) ? m.payment_ids.join(',') : paymentId) + '"> رفض</button>';
+  } else if (type === 'auto') {
+    btns = '<button class="btn btn-outline" data-action="undo" data-bank-id="' + bankId + '"> تراجع</button>';
+  }
+
+  return '<div class="match-card ' + secClass + ' ' + type + '">' +
+
+    '<div class="card-header">' +
+      '<span class="score ' + scoreClass + '">' + secIcon + ' ' + score + '/100</span>' +
+      '<span class="match-type-badge">' + matchLabel + '</span>' +
+      '<span class="security-badge ' + secClass + '">' + secText + '</span>' +
+    '</div>' +
+
+    '<div class="card-body">' +
+      '<div class="bank-side">' +
+        '<h4> التحويل البنكي</h4>' +
+        '<div class="info-row"><span class="label">المحوّل:</span> ' + (bt.payer_name||'غير معروف') + '</div>' +
+        '<div class="info-row"><span class="label">المبلغ:</span> ' + (bt.amount||0) + ' </div>' +
+        '<div class="info-row"><span class="label">التاريخ:</span> ' + (bt.parsed_date||'') + '</div>' +
+      '</div>' +
+
+      '<div class="payment-side">' +
+        '<h4>' + (m.match_type === 'grouped_complementary' ? ' الفواتير المجمعة' : ' الفاتورة') + '</h4>' +
+        '<div class="info-row"><span class="label">الزبون:</span> ' + (m.customer_name||'') + '</div>' +
+        '<div class="info-row"><span class="label">المبلغ:</span> ' + (m.invoice_amount||0) + ' </div>' +
+        (m.days_diff ? '<div class="info-row"><span class="label">الفرق:</span> ' + m.days_diff + ' يوم</div>' : '') +
+      '</div>' +
+    '</div>' +
+
+    '<div class="breakdown-section">' +
+      '<div class="breakdown-title"> تفاصيل التطابق</div>' +
+      '<div class="bar-row"><span>الاسم</span><div class="bar"><div class="bar-fill" style="width:' + (bd.name_score||0) + '%">' + (bd.name_score||0) + '%</div></div></div>' +
+      '<div class="bar-row"><span>المبلغ</span><div class="bar"><div class="bar-fill" style="width:' + (bd.amount_score||0) + '%">' + (bd.amount_score||0) + '%</div></div></div>' +
+      '<div class="bar-row"><span>التاريخ</span><div class="bar"><div class="bar-fill" style="width:' + (bd.date_score||0) + '%">' + (bd.date_score||0) + '%</div></div></div>' +
+    '</div>' +
+
+    custInvoicesHtml +
+    multiTransferHtml +
+    groupedHtml +
+    warningsHtml +
+    altHtml +
+
+    '<div class="card-footer">' + btns + '</div>' +
+  '</div>';
 }
 
 async function handleAccept(bankId, paymentIdsStr) {
@@ -680,7 +915,7 @@ async function showDebtsForBank(bankTxId, bankAmount, bankName) {
     for (const d of result.debts) {
       html += "<label class=\"debt-option\" style=\"display:block;padding:4px 0;\">";
       html += "<input type=\"checkbox\" class=\"debt-cb\" data-id=\"" + d.id + "\" data-amount=\"" + d.amount + "\" data-btid=\"" + bankTxId + "\" data-bank-amount=\"" + bankAmount + "\" /> ";
-      html += "<span>" + (d.customer_name || d.name || "غير معروف") + " - " + d.amount + "  (" + d.method + ")</span>";
+    html += "<span>" + (d.customer_name || d.name || "غير معروف") + " - " + d.amount + " (" + ({"transfer":"تحويل بنكي","wallet":"محفظة","debt":"دين","card":"بطاقة","cash":"نقد"}[d.method] || d.method || "غير محدد") + ")</span>";
       html += "</label>";
     }
 

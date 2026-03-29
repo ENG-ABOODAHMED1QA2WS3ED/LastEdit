@@ -111,7 +111,9 @@ function renderSalesSummary() {
     const cash = parseFloat(stats.cash_total) || 0;
     const transfers = parseFloat(stats.transfers_total) || 0;
     const debts = parseFloat(stats.debts_total) || 0;
+    const cards = parseFloat(stats.card_total) || 0;
     const pCash = total > 0 ? ((cash/total)*100).toFixed(1) : 0;
+    const pCards = total > 0 ? ((cards/total)*100).toFixed(1) : 0;
     const pTrans = total > 0 ? ((transfers/total)*100).toFixed(1) : 0;
     const pDebt = total > 0 ? ((debts/total)*100).toFixed(1) : 0;
     const eCash = document.getElementById("payCash");
@@ -126,6 +128,12 @@ function renderSalesSummary() {
     if (eTransPct) eTransPct.textContent = pTrans + "%";
     const eBarTrans = document.getElementById("barTransfers");
     if (eBarTrans) eBarTrans.style.width = pTrans + "%";
+    const eCards = document.getElementById("payCards");
+    if (eCards) eCards.textContent = formatCurrency(cards);
+    const eCardsPct = document.getElementById("payCardsPct");
+    if (eCardsPct) eCardsPct.textContent = pCards + "%";
+    const eBarCards = document.getElementById("barCards");
+    if (eBarCards) eBarCards.style.width = pCards + "%";
     const eDebt = document.getElementById("payDebts");
     if (eDebt) eDebt.textContent = formatCurrency(debts);
     const eDebtPct = document.getElementById("payDebtsPct");

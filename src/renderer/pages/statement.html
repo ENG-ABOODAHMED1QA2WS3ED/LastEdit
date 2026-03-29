@@ -1,0 +1,138 @@
+﻿<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <title>كشف حساب زبون</title>
+  <link rel="stylesheet" href="../styles/statement.css">
+</head>
+<body>
+  <nav class="sidebar no-print">
+    <a href="index.html" class="nav-item"><span class="nav-icon"></span><span>الرئيسية</span></a>
+    <a href="invoice.html" class="nav-item"><span class="nav-icon"></span><span>فاتورة جديدة</span></a>
+    <a href="customers.html" class="nav-item"><span class="nav-icon"></span><span>الزبائن</span></a>
+    <a href="products.html" class="nav-item"><span class="nav-icon"></span><span>المنتجات</span></a>
+    <a href="debts.html" class="nav-item"><span class="nav-icon"></span><span>الأرصدة والديون</span></a>
+    <a href="matching.html" class="nav-item"><span class="nav-icon"></span><span>المطابقة الذكية</span></a>
+    <a href="statement.html" class="nav-item active"><span class="nav-icon"></span><span>كشف حساب</span></a>
+    <a href="reports.html" class="nav-item"><span class="nav-icon"></span><span>التقارير</span></a>
+    <a href="settings.html" class="nav-item"><span class="nav-icon"></span><span>الإعدادات</span></a>
+  </nav>
+  <div class="statement-container">
+    <!-- شريط التحكم -->
+    <div class="controls-bar no-print">
+      <h2>كشف حساب زبون</h2>
+      <div class="controls-row">
+        <div class="control-group">
+          <label>الزبون</label>
+          <input type="text" id="customerSearch" placeholder="ابحث بالاسم أو الجوال..." autocomplete="off">
+          <div id="customerDropdown" class="dropdown-list"></div>
+          <input type="hidden" id="customerId">
+        </div>
+        <div class="control-group">
+          <label>من تاريخ</label>
+          <input type="date" id="fromDate">
+        </div>
+        <div class="control-group">
+          <label>إلى تاريخ</label>
+          <input type="date" id="toDate">
+        </div>
+        <div class="control-group">
+          <button id="btnGenerate" class="btn btn-primary">عرض الكشف</button>
+        </div>
+        <div class="control-group">
+          <button id="btnQuickMonth" class="btn btn-outline" title="الشهر الحالي">هذا الشهر</button>
+          <button id="btnQuickAll" class="btn btn-outline" title="من البداية">الكل</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- محتوى الكشف -->
+    <div id="statementContent" style="display:none;">
+      <!-- رأس الطباعة -->
+      <div class="print-header">
+        <h1>سوبر ماركت أبو كامل</h1>
+        <p>كشف حساب زبون</p>
+      </div>
+
+      <div class="customer-info-box">
+        <div class="info-row"><span class="label">الزبون:</span> <span id="stCustName">-</span></div>
+        <div class="info-row"><span class="label">الجوال:</span> <span id="stCustPhone">-</span></div>
+        <div class="info-row"><span class="label">الفترة:</span> <span id="stPeriod">-</span></div>
+        <div class="info-row"><span class="label">تاريخ الطباعة:</span> <span id="stPrintDate">-</span></div>
+      </div>
+
+      <!-- جدول الحركات -->
+      <table class="txn-table">
+        <thead>
+          <tr>
+            <th class="col-date">التاريخ</th>
+            <th class="col-desc">البيان</th>
+            <th class="col-amount">مدين (عليه)</th>
+            <th class="col-amount">دائن (له)</th>
+            <th class="col-balance">الرصيد</th>
+          </tr>
+        </thead>
+        <tbody id="txnBody"></tbody>
+        <tfoot>
+          <tr class="totals-row">
+            <td colspan="2"><strong>الإجمالي</strong></td>
+            <td id="tfootDebit" class="col-amount">-</td>
+            <td id="tfootCredit" class="col-amount">-</td>
+            <td id="tfootBalance" class="col-balance">-</td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <!-- الملخص -->
+      <div class="summary-box">
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span class="summary-label">الرصيد الافتتاحي</span>
+            <span id="smOpening" class="summary-value">0</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">إجمالي المشتريات</span>
+            <span id="smPurchases" class="summary-value">0</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">إجمالي المدفوعات</span>
+            <span id="smPayments" class="summary-value">0</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">إجمالي الديون</span>
+            <span id="smDebts" class="summary-value">0</span>
+          </div>
+          <div class="summary-item highlight">
+            <span class="summary-label">الرصيد النهائي</span>
+            <span id="smFinal" class="summary-value">0</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">الحالة</span>
+            <span id="smStatus" class="summary-value">-</span>
+          </div>
+        </div>
+        <div class="summary-counts">
+          <span>فواتير: <strong id="smInvCount">0</strong></span>
+          <span>دفعات: <strong id="smPayCount">0</strong></span>
+          <span>ديون: <strong id="smDebtCount">0</strong></span>
+        </div>
+        <div id="smMethodBreakdown" class="method-breakdown"></div>
+      </div>
+    </div>
+
+    <!-- رسالة فارغة -->
+    <div id="emptyMsg" class="empty-message">
+      <p>اختر زبون وحدد الفترة ثم اضغط "عرض الكشف"</p>
+    </div>
+
+    <!-- أزرار أسفل -->
+    <div id="actionBar" class="action-bar no-print" style="display:none;">
+      <button id="btnPrint" class="btn btn-primary">طباعة</button>
+      <button id="btnWhatsApp" class="btn btn-success">مشاركة واتساب</button>
+      <button id="btnBack" class="btn btn-secondary" onclick="history.back()">رجوع</button>
+    </div>
+  </div>
+
+  <script src="../scripts/statement.js"></script>
+</body>
+</html>

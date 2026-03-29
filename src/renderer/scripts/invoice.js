@@ -11,18 +11,64 @@ let selectedPaymentMethod = 'cash';
 let selectedTransferSource = 'bank_palestine';
 let selectedDeadlineHours = 0;
 let invoiceStartTime = null;
+let lastInvoiceData = null; // بيانات آخر فاتورة للطباعة
+let storeSettings = {};     // إعدادات المحل
 
 // ─── التهيئة ───
 document.addEventListener('DOMContentLoaded', () => {
+    // Delegated event handler for remove-item buttons (CSP safe)
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.remove-item-btn[data-remove-index]');
+        if (btn) {
+            const index = parseInt(btn.getAttribute('data-remove-index'));
+            if (!isNaN(index)) {
+                removeItem(index);
+            }
+        }
+    });
     checkSession();
     generateInvoiceNumber();
     startClock();
     startTimer();
     loadTodayStats();
+    // جلب إعدادات المحل للطباعة
+    window.api.getStoreSettings().then(ss => { if (ss && ss.success) storeSettings = ss.settings || {}; }).catch(() => {});
     focusBarcode();
     bindAllEvents();
     updateTotals();
     console.log('✅ شاشة الفاتورة جاهزة v5.0');
+});
+
+//  إعادة تهيئة عند العودة للصفحة (حل مشكلة تعليق البحث) 
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+        console.log('[invoice] Page restored from cache - rebinding events');
+        bindAllEvents();
+    }
+});
+
+//  Fallback: إعادة تهيئة عند focus على الصفحة 
+let _lastBindTime = 0;
+window.addEventListener('focus', () => {
+    const now = Date.now();
+    if (now - _lastBindTime > 3000) {
+        _lastBindTime = now;
+        const cs = document.getElementById('customerSearch');
+        if (cs && !cs._hasBoundListener) {
+            console.log('[invoice] Re-binding search listener on focus');
+            let debounce;
+            cs.addEventListener('input', () => {
+                clearTimeout(debounce);
+                const query = cs.value.trim();
+                if (query.length >= 2) {
+                    debounce = setTimeout(() => searchCustomers(query), 300);
+                } else {
+                    hideCustomerDropdown();
+                }
+            });
+            cs._hasBoundListener = true;
+        }
+    }
 });
 
 // ═══════════════════════════════════════════
@@ -279,7 +325,7 @@ function bindAllEvents() {
     document.getElementById('saveInvoiceBtn')?.addEventListener('click', handleSaveInvoice);
 
     // 16. طباعة
-    document.getElementById('printBtn')?.addEventListener('click', () => showToast('🖨️ ستتوفر الطباعة قريباً', 'info'));
+    document.getElementById('printBtn')?.addEventListener('click', () => { if (lastInvoiceData) printReceipt(lastInvoiceData); else showToast('لا توجد فاتورة للطباعة', 'info'); });
 
     // 17. الخروج
     document.getElementById('exitInvoiceBtn')?.addEventListener('click', showExitModal);
@@ -363,15 +409,15 @@ function updateProductTable() {
             <td class="col-product">${escapeHtml(item.name)}</td>
             <td class="col-qty">
                 <div class="qty-control">
-                    <button class="qty-btn" onclick="changeQuantity(${i}, -1)">−</button>
+                    <button class="qty-btn" data-qty-index="${i}" data-qty-delta="-1">−</button>
                     <span class="qty-value">${item.quantity}</span>
-                    <button class="qty-btn" onclick="changeQuantity(${i}, 1)">+</button>
+                    <button class="qty-btn" data-qty-index="${i}" data-qty-delta="1">+</button>
                 </div>
             </td>
             <td class="col-price">${item.unit_price.toFixed(2)}</td>
             <td class="col-total">${item.total_price.toFixed(2)}</td>
             <td class="col-action">
-                <button class="remove-item-btn" onclick="removeItem(${i})">حذف</button>
+                <button class="remove-item-btn" data-remove-index="${i}">حذف</button>
             </td>
         </tr>
     `).join('');
@@ -384,6 +430,16 @@ function changeQuantity(index, delta) {
     updateProductTable();
     updateTotals();
 }
+
+// Event delegation for quantity buttons (CSP-compliant)
+document.addEventListener("click", function(e) {
+    var btn = e.target.closest("[data-qty-index]");
+    if (btn) {
+        var index = parseInt(btn.getAttribute("data-qty-index"));
+        var delta = parseInt(btn.getAttribute("data-qty-delta"));
+        changeQuantity(index, delta);
+    }
+});
 
 function removeItem(index) {
     invoiceItems.splice(index, 1);
@@ -953,6 +1009,20 @@ async function handleSaveInvoice() {
     try {
         const result = await window.api.saveInvoice(invoiceData);
         if (result.success) {
+            // حفظ بيانات الفاتورة للطباعة
+            lastInvoiceData = {
+                invoiceNumber: invoiceNumber,
+                invoiceId: result.invoice_id,
+                total: total,
+                items: [...invoiceItems],
+                customer: selectedCustomer ? { ...selectedCustomer } : null,
+                paymentMethod: selectedPaymentMethod,
+                payments: [...(invoiceData.payments || [])],
+                discount: invoiceData.discount || 0,
+                notes: invoiceData.notes || '',
+                date: new Date().toLocaleString('ar-PS'),
+                cashReceived: parseFloat(document.getElementById('cashReceived')?.value) || 0
+            };
             showSuccessOverlay(invoiceNumber, total);
             console.log(`✅ الفاتورة محفوظة: ${invoiceNumber} | ID: ${result.invoice_id}`);
         } else {
@@ -971,47 +1041,214 @@ async function handleSaveInvoice() {
 
 function showSuccessOverlay(invNumber, total) {
     const methodLabels = {
-        'cash': '💵 نقد',
-        'transfer': '🏦 بنك فلسطين',
-        'wallet': '📱 PalPay',
-        'card': '💳 فيزا',
-        'debt': '📝 دين',
-        'mixed': '🔀 مختلط'
+        'cash': 'نقدي',
+        'transfer': 'تحويل',
+        'card': 'بطاقة',
+        'debt': 'دين',
+        'mixed': 'مختلط'
     };
+    const methodIcons = {
+        'cash': '💵',
+        'transfer': '🏦',
+        'card': '💳',
+        'debt': '📋',
+        'mixed': '🔀'
+    };
+    const pm = lastInvoiceData ? lastInvoiceData.paymentMethod : 'cash';
+    const icon = methodIcons[pm] || '💵';
+    const label = methodLabels[pm] || pm;
 
     let altInfo = '';
-    const altCheck = document.getElementById('altAccountCheck');
-    if (altCheck && altCheck.checked) {
-        const altName = document.getElementById('altAccountName')?.value.trim();
-        const altRelation = document.getElementById('altAccountRelation')?.value;
-        if (altName) {
-            altInfo = `<br>📌 التحويل من حساب: ${escapeHtml(altName)}${altRelation ? ' (' + altRelation + ')' : ''}`;
-        }
+    if (lastInvoiceData && lastInvoiceData.payments) {
+        lastInvoiceData.payments.forEach(function(p) {
+            if (p.bank && p.bank !== 'bank_palestine') {
+                altInfo = '<div style="color:#e67e22;font-size:13px;margin-top:4px;">⚠️ حساب بديل: ' + p.bank + '</div>';
+            }
+        });
     }
+
+    const customerName = lastInvoiceData && lastInvoiceData.customer ? lastInvoiceData.customer.name : '';
 
     const reviewContent = document.getElementById('reviewContent');
     if (reviewContent) {
-        reviewContent.innerHTML = `
-            <div style="font-size:60px; margin-bottom:10px;">✅</div>
-            <div style="font-size:18px; margin-bottom:5px;">${invNumber}</div>
-            <div style="font-size:14px; color:#7f8c8d;">
-                <br>🏷️ ${methodLabels[selectedPaymentMethod] || selectedPaymentMethod}
-                <br>${escapeHtml(selectedCustomer?.name || 'زبون عابر')}
-                ${altInfo}
-            </div>
-            <div style="font-size:28px; font-weight:800; color:#27ae60; margin:15px 0;">
-                ${total.toFixed(2)}₪
-            </div>
-        `;
+        reviewContent.innerHTML = '<div style="text-align:center;padding:20px;">' +
+            '<div style="font-size:60px;margin-bottom:10px;">✅</div>' +
+            '<div style="font-size:18px;font-weight:bold;margin-bottom:8px;">' + invNumber + '</div>' +
+            '<div style="font-size:15px;margin-bottom:4px;">' + icon + ' ' + label + '</div>' +
+            (customerName ? '<div style="font-size:14px;color:#555;margin-bottom:4px;">' + customerName + '</div>' : '') +
+            altInfo +
+            '<div style="font-size:28px;font-weight:bold;color:#27ae60;margin:12px 0;">' + parseFloat(total).toFixed(2) + '₪</div>' +
+            '<div style="display:flex;gap:10px;justify-content:center;margin-top:16px;">' +
+            '<button id="receiptPrintBtn" style="padding:10px 24px;font-size:15px;background:#27ae60;color:white;border:none;border-radius:8px;cursor:pointer;">🖨️ طباعة إيصال</button>' +
+            '<button id="receiptCloseBtn" style="padding:10px 24px;font-size:15px;background:#e0e0e0;color:#333;border:none;border-radius:8px;cursor:pointer;">✕ إغلاق</button>' +
+            '</div></div>';
+
+        // Attach event listeners AFTER innerHTML is set
+        setTimeout(function() {
+            var printBtn = document.getElementById('receiptPrintBtn');
+            if (printBtn) {
+                printBtn.addEventListener('click', function() {
+                    printReceipt(lastInvoiceData);
+                });
+            }
+            var closeBtn = document.getElementById('receiptCloseBtn');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', function() {
+                    hideModal('reviewModal');
+                    resetInvoice();
+                });
+            }
+        }, 50);
     }
 
     showModal('reviewModal');
-    showToast(`✅ تم حفظ الفاتورة - ${total.toFixed(2)}₪`, 'success');
+    showToast('✅ تم حفظ الفاتورة - ' + parseFloat(total).toFixed(2) + '₪', 'success');
+}
 
-    setTimeout(() => {
-        hideModal('reviewModal');
-        resetInvoice();
-    }, 1500);
+// ═══════════════════════════════════════════
+//          طباعة الإيصال
+// ═══════════════════════════════════════════
+
+function printReceipt(data) {
+    if (!data) {
+        showToast('❌ لا توجد بيانات للطباعة', 'error');
+        return;
+    }
+
+    const storeName = storeSettings.store_name || 'سوبر ماركت';
+    const storePhone = storeSettings.store_phone || '';
+    const storeAddress = storeSettings.store_address || '';
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    const methodLabels = {
+        'cash': 'نقدي',
+        'transfer': 'تحويل',
+        'card': 'بطاقة',
+        'debt': 'دين',
+        'mixed': 'مختلط'
+    };
+    const payLabel = methodLabels[data.paymentMethod] || data.paymentMethod || 'نقدي';
+
+    let itemsRows = '';
+    if (data.items && data.items.length > 0) {
+        data.items.forEach(function(item) {
+            const name = escapeHtml(item.name || '');
+            const qty = item.quantity || 0;
+            const price = parseFloat(item.unit_price || item.price || 0).toFixed(2);
+            const lineTotal = (qty * parseFloat(item.unit_price || item.price || 0)).toFixed(2);
+            itemsRows += '<tr><td style="text-align:right;padding:2px 0;">' + name + '</td>';
+            itemsRows += '<td style="text-align:center;padding:2px 4px;">' + qty + '</td>';
+            itemsRows += '<td style="text-align:center;padding:2px 4px;">' + price + '</td>';
+            itemsRows += '<td style="text-align:left;padding:2px 0;">' + lineTotal + '</td></tr>';
+        });
+    }
+
+    let paymentSection = '';
+    const total = parseFloat(data.total || 0).toFixed(2);
+
+    if (data.paymentMethod === 'debt') {
+        const paid = parseFloat(data.paidAmount || 0).toFixed(2);
+        const remaining = (parseFloat(data.total || 0) - parseFloat(data.paidAmount || 0)).toFixed(2);
+        paymentSection = '<div style="text-align:center;font-weight:bold;margin:4px 0;">' +
+            'طريقة الدفع: ' + payLabel + '</div>' +
+            '<div style="display:flex;justify-content:space-between;padding:2px 0;">' +
+            '<span>الإجمالي:</span><span>' + total + ' ₪</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:2px 0;">' +
+            '<span>المدفوع:</span><span>' + paid + ' ₪</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:16px;font-weight:bold;color:#c0392b;border-top:1px dashed #000;margin-top:4px;">' +
+            '<span>المتبقي (دين):</span><span>' + remaining + ' ₪</span></div>';
+    } else if (data.paymentMethod === 'mixed' && data.payments) {
+        paymentSection = '<div style="text-align:center;font-weight:bold;margin:4px 0;">' +
+            'طريقة الدفع: مختلط</div>';
+        var mixedLabels = { 'cash': 'نقدي', 'transfer': 'تحويل', 'card': 'بطاقة', 'debt': 'دين' };
+        data.payments.forEach(function(p) {
+            var lbl = mixedLabels[p.method] || p.method;
+            paymentSection += '<div style="display:flex;justify-content:space-between;padding:1px 0;">' +
+                '<span>' + lbl + ':</span><span>' + parseFloat(p.amount || 0).toFixed(2) + ' ₪</span></div>';
+        });
+        paymentSection += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-weight:bold;border-top:1px dashed #000;margin-top:4px;">' +
+            '<span>الإجمالي:</span><span>' + total + ' ₪</span></div>';
+    } else if (data.paymentMethod === 'cash') {
+        const cashReceived = parseFloat(data.cashReceived || data.total || 0).toFixed(2);
+        const change = parseFloat(data.change || 0).toFixed(2);
+        paymentSection = '<div style="text-align:center;font-weight:bold;margin:4px 0;">' +
+            'طريقة الدفع: ' + payLabel + '</div>' +
+            '<div style="display:flex;justify-content:space-between;padding:2px 0;">' +
+            '<span>الإجمالي:</span><span>' + total + ' ₪</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:2px 0;">' +
+            '<span>المدفوع:</span><span>' + cashReceived + ' ₪</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:2px 0;">' +
+            '<span>الباقي:</span><span>' + change + ' ₪</span></div>';
+    } else {
+        paymentSection = '<div style="text-align:center;font-weight:bold;margin:4px 0;">' +
+            'طريقة الدفع: ' + payLabel + '</div>' +
+            '<div style="display:flex;justify-content:space-between;padding:4px 0;font-weight:bold;">' +
+            '<span>الإجمالي:</span><span>' + total + ' ₪</span></div>';
+    }
+
+    let discountLine = '';
+    if (data.discount && parseFloat(data.discount) > 0) {
+        discountLine = '<div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">' +
+            '<span>الخصم:</span><span>-' + parseFloat(data.discount).toFixed(2) + ' ₪</span></div>';
+    }
+
+    let notesLine = '';
+    if (data.notes) {
+        notesLine = '<div style="border-top:1px dashed #000;margin-top:4px;padding-top:4px;font-size:11px;">' +
+            'ملاحظات: ' + escapeHtml(data.notes) + '</div>';
+    }
+
+    const receiptHTML = '<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">' +
+        '<style>' +
+        '* { margin:0; padding:0; box-sizing:border-box; }' +
+        'body { font-family: Arial, sans-serif; width:76mm; margin:0 auto; padding:4mm; font-size:13px; direction:rtl; }' +
+        '.store-name { text-align:center; font-size:18px; font-weight:bold; margin-bottom:2px; }' +
+        '.store-info { text-align:center; font-size:11px; color:#555; }' +
+        '.divider { border-top:1px dashed #000; margin:6px 0; }' +
+        '.invoice-num { text-align:center; font-size:14px; font-weight:bold; }' +
+        '.invoice-date { text-align:center; font-size:11px; color:#555; margin-bottom:2px; }' +
+        '.customer-name { text-align:center; font-size:13px; font-weight:bold; margin-bottom:4px; }' +
+        'table { width:100%; border-collapse:collapse; font-size:12px; }' +
+        'th { border-bottom:1px solid #000; padding:3px 0; font-size:11px; }' +
+        '.footer { text-align:center; font-size:11px; margin-top:8px; color:#777; }' +
+        '@media print { body { width:76mm; } }' +
+        '</style></head><body>' +
+        '<div class="store-name">' + escapeHtml(storeName) + '</div>' +
+        (storeAddress ? '<div class="store-info">' + escapeHtml(storeAddress) + '</div>' : '') +
+        (storePhone ? '<div class="store-info">هاتف: ' + escapeHtml(storePhone) + '</div>' : '') +
+        '<div class="divider"></div>' +
+        '<div class="invoice-num">' + (data.invoiceNumber || '') + '</div>' +
+        '<div class="invoice-date">' + (data.date || new Date().toLocaleString('ar-PS')) + '</div>' +
+        '<div class="customer-name">' + escapeHtml(data.customer && data.customer.name ? data.customer.name : 'زبون عابر') + '</div>' +
+        '<div class="divider"></div>' +
+        '<table><thead><tr>' +
+        '<th style="text-align:right;">الصنف</th>' +
+        '<th style="text-align:center;">الكمية</th>' +
+        '<th style="text-align:center;">السعر</th>' +
+        '<th style="text-align:left;">المجموع</th>' +
+        '</tr></thead><tbody>' + itemsRows + '</tbody></table>' +
+        '<div class="divider"></div>' +
+        discountLine +
+        paymentSection +
+        notesLine +
+        '<div class="divider"></div>' +
+        '<div class="footer">شكراً لتعاملكم معنا</div>' +
+        '<div style="margin-bottom:20mm;"></div>' +
+        '</body></html>';
+
+    const printWin = window.open('', '_blank', 'width=350,height=600');
+    if (printWin) {
+        printWin.document.write(receiptHTML);
+        printWin.document.close();
+        printWin.focus();
+        printWin.print();
+    } else {
+        showToast('❌ تعذر فتح نافذة الطباعة', 'error');
+    }
 }
 
 function resetInvoice() {

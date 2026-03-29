@@ -1,0 +1,561 @@
+﻿<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>تفعيل البرنامج - سوبر ماركت أبو كميل</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+            background: radial-gradient(ellipse at top, #0f1923 0%, #0a1120 50%, #060d18 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            padding: 16px;
+            direction: rtl;
+        }
+
+        /* === ANIMATED BORDER GLOW === */
+        @keyframes borderGlow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% center; }
+            100% { background-position: 200% center; }
+        }
+
+        .card-wrapper {
+            position: relative;
+            border-radius: 22px;
+            padding: 2px;
+            max-width: 860px;
+            width: 100%;
+            animation: fadeInUp 0.6s ease-out;
+        }
+        .card-wrapper::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 22px;
+            padding: 2px;
+            background: linear-gradient(270deg, #63b3ed, #48bb78, #ed64a6, #ecc94b, #63b3ed, #48bb78);
+            background-size: 400% 400%;
+            animation: borderGlow 6s ease infinite;
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+        }
+        .card-wrapper::after {
+            content: '';
+            position: absolute;
+            inset: -1px;
+            border-radius: 22px;
+            background: linear-gradient(270deg, #63b3ed, #48bb78, #ed64a6, #ecc94b, #63b3ed);
+            background-size: 400% 400%;
+            animation: borderGlow 6s ease infinite;
+            filter: blur(18px);
+            opacity: 0.12;
+            z-index: -1;
+        }
+
+        /* === MAIN CARD === */
+        .unified-card {
+            background: linear-gradient(160deg, rgba(14,23,38,0.98) 0%, rgba(10,17,28,0.99) 100%);
+            border-radius: 20px;
+            display: flex;
+            flex-direction: row;
+            overflow: hidden;
+            position: relative;
+            z-index: 1;
+            backdrop-filter: blur(10px);
+        }
+
+        /* === RIGHT SIDE: ACTIVATION === */
+        .act-section {
+            flex: 1;
+            padding: 32px 30px;
+            text-align: center;
+            border-left: 1px solid rgba(255,255,255,0.04);
+        }
+        .logo { font-size: 42px; margin-bottom: 8px; filter: drop-shadow(0 2px 8px rgba(245,158,11,0.3)); }
+        .app-name { font-size: 1.45rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .app-sub { font-size: 0.75rem; color: #546580; margin-bottom: 18px; letter-spacing: 1px; }
+
+        /* Machine ID - محسّن */
+        .machine-id-section {
+            background: linear-gradient(135deg, rgba(0,0,0,0.35), rgba(0,20,40,0.3));
+            border: 1px solid rgba(99,179,237,0.1);
+            border-radius: 12px;
+            padding: 10px 14px;
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: border-color 0.3s;
+        }
+        .machine-id-section:hover { border-color: rgba(99,179,237,0.25); }
+        .machine-id-label { font-size: 0.65rem; color: #3e5068; }
+        .machine-id-value {
+            font-size: 0.72rem; color: #63b3ed; font-weight: 700;
+            direction: ltr; letter-spacing: 0.5px;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+        .copy-btn {
+            background: rgba(99,179,237,0.08);
+            border: 1px solid rgba(99,179,237,0.15);
+            border-radius: 6px;
+            padding: 4px 8px;
+            cursor: pointer;
+            color: #63b3ed;
+            font-size: 0.6rem;
+            transition: all 0.2s;
+        }
+        .copy-btn:hover { background: rgba(99,179,237,0.18); transform: scale(1.05); }
+        .copy-btn.copied { background: rgba(72,187,120,0.2); border-color: #48bb78; color: #48bb78; }
+
+        /* Input Group - محسّن */
+        .input-group { display: flex; gap: 8px; margin-bottom: 10px; }
+        .input-group input {
+            flex: 1; padding: 12px 16px; border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.12); background: rgba(0,0,0,0.35);
+            color: #fff; font-size: 0.88rem; direction: ltr; text-align: center;
+            font-family: 'Consolas', 'Courier New', monospace;
+            letter-spacing: 1.5px; font-weight: 600;
+            transition: all 0.3s;
+        }
+        .input-group input:focus {
+            outline: none;
+            border-color: #63b3ed;
+            box-shadow: 0 0 15px rgba(99,179,237,0.15), inset 0 0 15px rgba(99,179,237,0.05);
+        }
+        .input-group input::placeholder { color: #2a3a4e; letter-spacing: 2px; font-weight: 400; }
+        .input-group button {
+            padding: 12px 22px; border-radius: 12px; border: none;
+            background: linear-gradient(135deg, #48bb78, #38a169); color: #fff;
+            font-weight: 700; cursor: pointer; font-size: 0.88rem;
+            transition: all 0.3s; font-family: 'Cairo', sans-serif;
+            box-shadow: 0 2px 10px rgba(72,187,120,0.2);
+        }
+        .input-group button:hover { transform: scale(1.04); box-shadow: 0 4px 18px rgba(72,187,120,0.35); }
+        .input-group button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .msg { text-align: center; margin: 8px 0; font-size: 0.78rem; min-height: 20px; font-weight: 600; }
+        .msg.error { color: #fc8181; }
+        .msg.success { color: #68d391; }
+
+        /* Plans Grid - محسّن */
+        .plans { margin: 12px 0; }
+        .plans h3 { font-size: 0.75rem; color: #546580; margin-bottom: 8px; font-weight: 600; }
+        .plans-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .plan-item {
+            background: rgba(0,0,0,0.25);
+            border-radius: 10px; padding: 9px 8px;
+            border: 1px solid rgba(255,255,255,0.04);
+            transition: all 0.3s; cursor: default;
+        }
+        .plan-item:hover { border-color: rgba(99,179,237,0.18); background: rgba(0,20,40,0.3); transform: translateY(-1px); }
+        .plan-name { font-size: 0.72rem; font-weight: 700; color: #e2e8f0; }
+        .plan-price { font-size: 0.58rem; color: #546580; margin-top: 2px; }
+
+        /* License Info - محسّن */
+        .license-info {
+            background: linear-gradient(135deg, rgba(0,40,30,0.35), rgba(0,30,20,0.25));
+            border: 1px solid rgba(72,187,120,0.2);
+            border-radius: 14px; padding: 18px; margin-bottom: 12px;
+            animation: fadeInUp 0.5s ease-out;
+        }
+        .plan-badge {
+            display: inline-block; padding: 5px 20px; border-radius: 22px;
+            background: linear-gradient(135deg, #48bb78, #38a169); color: #fff;
+            font-size: 0.78rem; font-weight: 700; margin-bottom: 8px;
+            box-shadow: 0 2px 10px rgba(72,187,120,0.25);
+        }
+        .days-left { font-size: 1.7rem; font-weight: 800; color: #48bb78; margin: 4px 0; }
+        .days-left.warning { color: #ecc94b; }
+        .days-left.critical { color: #fc8181; animation: pulse 1.5s infinite; }
+        .expiry { font-size: 0.72rem; color: #48bb78; margin-bottom: 10px; }
+
+        /* Countdown - محسّن */
+        .countdown-container {
+            display: flex; justify-content: center; align-items: center;
+            gap: 6px; direction: ltr; margin: 8px 0;
+        }
+        .countdown-box {
+            background: linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.35));
+            border-radius: 10px; padding: 10px 4px; min-width: 56px;
+            border: 1px solid rgba(255,255,255,0.04);
+        }
+        .countdown-num { font-size: 1.5rem; font-weight: 800; color: #fff; }
+        .countdown-label { font-size: 0.52rem; color: #546580; margin-top: 2px; }
+        .countdown-sep { font-size: 1.3rem; color: #48bb78; font-weight: 800; }
+        .countdown-warn .countdown-sep { color: #ecc94b; }
+        .countdown-critical .countdown-sep { color: #fc8181; animation: pulse 1s infinite; }
+        .countdown-critical .countdown-num { color: #fc8181; }
+
+        /* Enter Button - محسّن */
+        .enter-btn {
+            display: block; width: 100%; padding: 14px; margin-top: 12px;
+            background: linear-gradient(135deg, #4299e1, #63b3ed, #4299e1);
+            background-size: 200% auto;
+            color: #fff; border-radius: 14px; border: none;
+            font-size: 1rem; font-weight: 800; cursor: pointer;
+            transition: all 0.4s; font-family: 'Cairo', sans-serif;
+            box-shadow: 0 4px 15px rgba(66,153,225,0.25);
+            letter-spacing: 0.5px;
+        }
+        .enter-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(66,153,225,0.4);
+            background-position: right center;
+        }
+        .new-key-link {
+            display: inline-block; margin-top: 8px;
+            color: #63b3ed; font-size: 0.72rem; cursor: pointer;
+            text-decoration: underline; transition: color 0.2s;
+        }
+        .new-key-link:hover { color: #90cdf4; }
+
+        /* === LEFT SIDE: DEVELOPER - محسّن === */
+        .dev-section {
+            width: 260px; min-width: 260px;
+            padding: 26px 18px;
+            display: flex; flex-direction: column;
+            align-items: center; text-align: center;
+            position: relative;
+            background: linear-gradient(180deg, rgba(0,0,0,0.2), rgba(0,0,0,0.12));
+        }
+        .dev-badge {
+            font-size: 0.52rem; text-transform: uppercase;
+            letter-spacing: 3px; color: #63b3ed;
+            padding: 5px 16px; border: 1px solid rgba(99,179,237,0.2);
+            border-radius: 12px; background: rgba(99,179,237,0.05);
+            margin-bottom: 16px;
+        }
+        .dev-avatar {
+            width: 70px; height: 70px; border-radius: 50%;
+            background: linear-gradient(135deg, #1a3352, #234b73);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.8rem; margin-bottom: 12px;
+            border: 2px solid rgba(99,179,237,0.2);
+            box-shadow: 0 0 30px rgba(99,179,237,0.12);
+            transition: box-shadow 0.3s;
+        }
+        .dev-avatar:hover { box-shadow: 0 0 40px rgba(99,179,237,0.2); }
+        .dev-name {
+            font-size: 0.95rem; font-weight: 800;
+            color: #e2e8f0; line-height: 1.5;
+            margin-bottom: 4px; white-space: nowrap;
+        }
+        .dev-title {
+            font-size: 0.6rem; color: #63b3ed;
+            font-weight: 600; margin-bottom: 5px;
+        }
+        .dev-bio {
+            font-size: 0.62rem; color: #8badc4;
+            line-height: 1.9; margin-bottom: 12px; padding: 0 4px;
+        }
+        .dev-line {
+            width: 50px; height: 1px;
+            background: linear-gradient(to right, transparent, rgba(99,179,237,0.25), transparent);
+            margin: 8px 0;
+        }
+        .dev-services {
+            display: flex; flex-direction: column;
+            gap: 4px; width: 100%; margin-bottom: 14px;
+        }
+        .dev-svc {
+            font-size: 0.6rem; color: #8badc4;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            transition: color 0.2s;
+        }
+        .dev-svc:hover { color: #63b3ed; }
+        .dev-svc:last-child { border-bottom: none; }
+        .dev-svc-ico { margin-left: 6px; font-size: 0.72rem; }
+        .dev-contacts {
+            display: flex; flex-direction: column;
+            gap: 7px; width: 100%;
+            margin-top: auto; padding-top: 14px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+        }
+        .dev-cta {
+            display: flex; align-items: center; justify-content: center;
+            gap: 8px; padding: 8px 12px;
+            background: rgba(99,179,237,0.04);
+            border-radius: 10px;
+            border: 1px solid rgba(99,179,237,0.08);
+            text-decoration: none; transition: all 0.3s;
+        }
+        .dev-cta:hover {
+            background: rgba(99,179,237,0.1);
+            border-color: rgba(99,179,237,0.22);
+            transform: translateX(-3px);
+        }
+        .dev-cta-ico { font-size: 0.85rem; }
+        .dev-cta-lbl { font-size: 0.42rem; color: #3e5068; text-transform: uppercase; letter-spacing: 1.5px; }
+        .dev-cta-val { font-size: 0.62rem; color: #90cdf4; direction: ltr; font-weight: 600; }
+        .dev-copy { font-size: 0.42rem; color: #2d3f52; margin-top: 10px; }
+
+        @media (max-width: 700px) {
+            .unified-card { flex-direction: column; }
+            .act-section { border-left: none; border-bottom: 1px solid rgba(255,255,255,0.04); }
+            .dev-section { width: 100%; min-width: unset; }
+        }
+    </style>
+
+    <body>
+        <div class="card-wrapper">
+            <div class="unified-card">
+                <!-- RIGHT: Activation -->
+                <div class="act-section">
+                    <div class="logo">&#128203;</div>
+                    <div class="app-name">سوبر ماركت أبو كميل</div>
+                    <div class="app-sub">نظام نقاط البيع</div>
+
+                    <div id="activationForm">
+                        <div class="machine-id-section">
+                            <span class="machine-id-label">معرف الجهاز:</span>
+                            <span class="machine-id-value" id="machineId">...</span>
+                            <button class="copy-btn" id="copyMid" onclick="copyMachineId()">نسخ</button>
+                        </div>
+                        <div class="input-group">
+                            <button id="btnActivate" onclick="activate()">تفعيل</button>
+                            <input type="text" id="licenseKey" placeholder="أدخل مفتاح التفعيل" autocomplete="off" data-lpignore="true" data-form-type="other">
+                        </div>
+                        <div class="msg" id="msg"></div>
+                        <div class="plans">
+                            <h3>باقات الاشتراك</h3>
+                            <div class="plans-grid">
+                                <div class="plan-item"><div class="plan-name">تجربة مجانية</div><div class="plan-price">يومين - مجاناً</div></div>
+                                <div class="plan-item"><div class="plan-name">شهري</div><div class="plan-price">30 يوم - 400 شيكل</div></div>
+                                <div class="plan-item"><div class="plan-name">3 شهور</div><div class="plan-price">90 يوم - 1,000 شيكل</div></div>
+                                <div class="plan-item"><div class="plan-name">6 شهور</div><div class="plan-price">180 يوم - 4,000 شيكل</div></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="licenseInfo" style="display:none">
+                        <div class="license-info">
+                            <div class="plan-badge" id="infoPlan"></div>
+                            <div class="days-left" id="infoDays"></div>
+                            <div class="expiry" id="infoExpiry"></div>
+                            <div id="liveTimer" class="countdown-container">
+                                <div class="countdown-box"><div class="countdown-num" id="cDays">0</div><div class="countdown-label">يوم</div></div>
+                                <div class="countdown-sep">:</div>
+                                <div class="countdown-box"><div class="countdown-num" id="cHours">00</div><div class="countdown-label">ساعة</div></div>
+                                <div class="countdown-sep">:</div>
+                                <div class="countdown-box"><div class="countdown-num" id="cMins">00</div><div class="countdown-label">دقيقة</div></div>
+                                <div class="countdown-sep">:</div>
+                                <div class="countdown-box"><div class="countdown-num" id="cSecs">00</div><div class="countdown-label">ثانية</div></div>
+                            </div>
+                            <div id="progressBar" style="display:none;margin-top:10px;background:rgba(0,0,0,0.3);border-radius:10px;height:6px;overflow:hidden">
+                                <div id="progressFill" style="height:100%;border-radius:10px;transition:width 0.5s"></div>
+                            </div>
+                            <div id="progressText" style="font-size:11px;margin-top:4px;color:#546580"></div>
+                            <div id="warnMsg" style="display:none;margin-top:8px;padding:6px;background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.25);border-radius:8px;color:#e74c3c;font-size:12px"></div>
+                        </div>
+                        <button class="enter-btn" onclick="enterApp()">دخول البرنامج</button>
+                        <div style="margin-top:6px">
+                            <span class="new-key-link" onclick="showNewKey()">إدخال مفتاح جديد</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LEFT: Developer -->
+                <div class="dev-section">
+                    <div class="dev-badge">DEVELOPER</div>
+                    <div class="dev-avatar">&#128104;&#8205;&#128187;</div>
+                    <div class="dev-name">عبدالرحمن أحمد أبوثريا</div>
+                    <div class="dev-title">مصمم جرافيك ومطوّر برمجيات</div>
+                    <div class="dev-bio">متخصص بتصميم الهويات البصرية وتطوير تطبيقات الموبايل وأنظمة نقاط البيع • فريق متكامل يحوّل رؤيتك إلى واقع رقمي بأعلى معايير الجودة</div>
+                    <div class="dev-line"></div>
+                    <div class="dev-services">
+                        <div class="dev-svc"><span class="dev-svc-ico">&#128242;</span> تطبيقات موبايل</div>
+                        <div class="dev-svc"><span class="dev-svc-ico">&#128187;</span> أنظمة POS</div>
+                        <div class="dev-svc"><span class="dev-svc-ico">&#127912;</span> هويات بصرية</div>
+                        <div class="dev-svc"><span class="dev-svc-ico">&#10024;</span> تصميم جرافيك</div>
+                    </div>
+                    <div class="dev-contacts">
+                        <a class="dev-cta" href="https://wa.me/970592571535" target="_blank">
+                            <span class="dev-cta-ico">&#128241;</span><div><div class="dev-cta-lbl">WHATSAPP</div><div class="dev-cta-val">0592571535</div></div>
+                        </a>
+                        <a class="dev-cta" href="tel:0567058892">
+                            <span class="dev-cta-ico">&#128222;</span><div><div class="dev-cta-lbl">CALL US</div><div class="dev-cta-val">0567058892</div></div>
+                        </a>
+                        <a class="dev-cta" href="mailto:abood2021ahmed257@gmail.com">
+                            <span class="dev-cta-ico">&#9993;</span><div><div class="dev-cta-lbl">EMAIL</div><div class="dev-cta-val">abood2021ahmed257@gmail.com</div></div>
+                        </a>
+                    </div>
+                    <div class="dev-copy">© 2026 All Rights Reserved</div>
+                </div>
+            </div>
+        </div>
+
+<script>
+        async function init() {
+            const mid = await window.licenseAPI.getMachineId();
+            document.getElementById('machineId').textContent = mid.machineId || mid;
+
+            const status = await window.licenseAPI.checkLicense();
+            if (status.valid) {
+                showLicenseInfo(status);
+            }
+        }
+
+        async function activate() {
+            const key = document.getElementById('licenseKey').value.trim();
+            if (!key) return showMsg('الرجاء إدخال مفتاح التفعيل', 'error');
+
+            document.getElementById('btnActivate').disabled = true;
+            document.getElementById('btnActivate').textContent = 'جاري التحقق...';
+
+            const result = await window.licenseAPI.activate(key);
+
+            if (result.valid) {
+                showMsg('تم التفعيل بنجاح!', 'success');
+                setTimeout(() => showLicenseInfo(result), 1000);
+            } else {
+                showMsg(result.error || result.message, 'error');
+            }
+
+            document.getElementById('btnActivate').disabled = false;
+            document.getElementById('btnActivate').textContent = 'تفعيل البرنامج';
+        }
+
+        function showLicenseInfo(info) {
+            document.getElementById('activationForm').style.display = 'none';
+            document.getElementById('licenseInfo').style.display = 'block';
+            document.getElementById('infoPlan').textContent = info.planName;
+
+            // حساب النسبة المتبقية
+            const totalDaysMap = { trial: 2, monthly: 30, quarter: 90, half: 180 };
+            // const created removed - using plan total days
+            const expiry = new Date(info.expiry + 'T23:59:59'); const now = new Date(); const planTotalDays = (totalDaysMap[info.plan] || 30); const totalMs = planTotalDays * 24*60*60*1000; const leftMs = Math.max(0, expiry - now); const percentage = Math.min(100, Math.round((leftMs / totalMs) * 100));
+            const isWarning = percentage <= 20;
+
+            // تايمر العد التنازلي
+            const daysEl = document.getElementById('infoDays');
+            const todayOnly = new Date(new Date().toISOString().split('T')[0]); const expiryOnly = new Date(info.expiry); const daysRemaining = Math.max(0, Math.round((expiryOnly - todayOnly) / 86400000));
+            daysEl.textContent = daysRemaining + ' \u064A\u0648\u0645 \u0645\u062A\u0628\u0642\u064A';
+            daysEl.className = 'days-left' + (isWarning ? ' critical' : info.daysLeft <= 3 ? ' warning' : '');
+
+            // شريط التقدم
+            const progressBar = document.getElementById('progressBar');
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            if (progressBar) {
+                progressBar.style.display = 'block';
+                progressFill.style.width = percentage + '%';
+                progressFill.style.background = isWarning ? '#e74c3c' : percentage <= 40 ? '#f39c12' : '#27ae60';
+                progressText.textContent = percentage + '% \u0645\u062A\u0628\u0642\u064A \u0645\u0646 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643';
+                progressText.style.color = isWarning ? '#e74c3c' : '#8899aa';
+            }
+
+            // رسالة تحذير
+            const warnMsg = document.getElementById('warnMsg');
+            if (warnMsg && isWarning) {
+                warnMsg.style.display = 'block';
+                warnMsg.textContent = '\u26A0 \u0627\u0634\u062A\u0631\u0627\u0643\u0643 \u0639\u0644\u0649 \u0648\u0634\u0643 \u0627\u0644\u0627\u0646\u062A\u0647\u0627\u0621! \u062A\u0648\u0627\u0635\u0644 \u0645\u0639\u0646\u0627 \u0644\u0644\u062A\u062C\u062F\u064A\u062F';
+            }
+
+            document.getElementById('infoExpiry').textContent = '\u064A\u0646\u062A\u0647\u064A: ' + info.expiry + ' - 23:59:59';
+
+            // تايمر حي
+            startCountdown(info.expiry);
+        }
+
+        function startCountdown(expiryDate) {
+            const container = document.getElementById('liveTimer');
+            const dEl = document.getElementById('cDays');
+            const hEl = document.getElementById('cHours');
+            const mEl = document.getElementById('cMins');
+            const sEl = document.getElementById('cSecs');
+            if (!dEl) return;
+
+            function update() {
+                const now = new Date();
+                const exp = new Date(expiryDate + 'T23:59:59');
+                const diff = exp - now;
+                if (diff <= 0) {
+                    dEl.textContent = '0';
+                    hEl.textContent = '0';
+                    mEl.textContent = '0';
+                    sEl.textContent = '0';
+                    container.classList.add('countdown-critical');
+                    return;
+                }
+                const d = Math.floor(diff / 86400000);
+                const h = Math.floor((diff % 86400000) / 3600000);
+                const m = Math.floor((diff % 3600000) / 60000);
+                const s = Math.floor((diff % 60000) / 1000);
+                dEl.textContent = d;
+                hEl.textContent = String(h).padStart(2, '0');
+                mEl.textContent = String(m).padStart(2, '0');
+                sEl.textContent = String(s).padStart(2, '0');
+
+                container.classList.remove('countdown-warn', 'countdown-critical');
+                if (d <= 0 && h <= 6) container.classList.add('countdown-critical');
+                else if (d <= 1) container.classList.add('countdown-warn');
+            }
+            update();
+            setInterval(update, 1000);
+        }
+
+        function showMsg(text, type) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = 'msg ' + type;
+        }
+
+        function showNewKey() {
+            document.getElementById('activationForm').style.display = 'block';
+            document.getElementById('licenseInfo').style.display = 'none';
+        }
+
+
+        async function copyMachineId() {
+            const mid = document.getElementById('machineId').textContent;
+            const btn = document.getElementById('copyMid');
+            try {
+                await navigator.clipboard.writeText(mid);
+                btn.textContent = 'تم!';
+                btn.classList.add('copied');
+                setTimeout(() => { btn.textContent = 'نسخ'; btn.classList.remove('copied'); }, 2000);
+            } catch(e) {
+                const ta = document.createElement('textarea');
+                ta.value = mid; document.body.appendChild(ta);
+                ta.select(); document.execCommand('copy');
+                document.body.removeChild(ta);
+                btn.textContent = 'تم!';
+                btn.classList.add('copied');
+                setTimeout(() => { btn.textContent = 'نسخ'; btn.classList.remove('copied'); }, 2000);
+            }
+        }
+        async function enterApp() {
+            await window.licenseAPI.enterApp();
+        }
+
+        document.getElementById('licenseKey').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') activate();
+        });
+
+        init();
+    </script>
+    </body>
+</html>
+

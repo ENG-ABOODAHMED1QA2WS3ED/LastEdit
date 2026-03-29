@@ -343,6 +343,7 @@ function renderCustomersTable(customers) {
                     <div class="action-buttons">
                         <button class="btn-icon btn-icon-view" title="عرض التفاصيل" data-view-customer="${customer.id}">👁</button>
                         <button class="btn-icon btn-icon-edit" title="تعديل" data-edit-customer="${customer.id}">✏️</button>
+                        <button class="btn-icon btn-icon-statement" title="كشف حساب" data-statement-customer="${customer.id}" style="color:#3498db;font-size:11px;font-weight:bold;">كشف</button>
                         <button class="btn-icon btn-icon-delete" title="حذف" data-delete-customer="${customer.id}" data-customer-name="${escapeHtml(customer.name)}">🗑</button>
                     </div>
                 </td>
@@ -811,6 +812,12 @@ function bindCustomerEvents() {
             var id = parseInt(this.getAttribute('data-delete-customer'));
             var name = this.getAttribute('data-customer-name');
             deleteCustomer(id, name);
+        });
+    });
+    document.querySelectorAll('[data-statement-customer]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var custId = this.getAttribute('data-statement-customer');
+            window.location.href = 'statement.html?customer_id=' + custId;
         });
     });
 }

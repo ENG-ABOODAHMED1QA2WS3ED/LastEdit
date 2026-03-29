@@ -194,7 +194,8 @@ function bindNavigation() {
         'reports': 'reports.html',
         'closing': 'closing.html',
         'settings': 'settings.html',
-        'debts': 'debts.html'
+        'debts': 'debts.html',
+        'statement': 'statement.html'
     };
 
 

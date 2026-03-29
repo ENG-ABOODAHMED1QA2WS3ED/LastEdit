@@ -1,26 +1,76 @@
 {
-  "name": "abu-kamil-pos",
-  "version": "1.0.0",
-  "description": "نظام نقاط البيع — سوبر ماركت أبو كميل",
-  "main": "src/main/main.js",
-  "scripts": {
-    "start": "chcp 65001 >nul && electron .",
-    "build": "electron-builder",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [
-    "pos",
-    "supermarket"
-  ],
-  "author": "Abu Kamil",
-  "license": "ISC",
-  "dependencies": {
-    "better-sqlite3": "^11.0.0",
-    "electron": "^33.0.0",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "@electron/rebuild": "^3.0.0",
-    "electron-builder": "^25.0.0"
-  }
+    "name":  "abu-kamil-pos",
+    "version":  "1.0.0",
+    "description":  "نظام نقاط البيع — سوبر ماركت أبو كميل",
+    "main":  "src/main/main.js",
+    "scripts":  {
+                    "start":  "chcp 65001 \u003enul \u0026\u0026 electron .",
+                    "build":  "electron-builder",
+                    "test":  "echo \"Error: no test specified\" \u0026\u0026 exit 1"
+                },
+    "keywords":  [
+                     "pos",
+                     "supermarket"
+                 ],
+    "author":  "Abu Kamil",
+    "license":  "ISC",
+    "dependencies":  {
+                         "better-sqlite3":  "^12.6.2",
+                         "node-machine-id":  "^1.1.12",
+                         "xlsx":  "^0.18.5"
+                     },
+    "devDependencies":  {
+                            "@electron/rebuild":  "^3.7.2",
+                            "electron":  "^40.6.1",
+                            "electron-builder":  "^25.1.8"
+                        },
+    "build":  {
+                  "appId":  "com.abukamil.pos",
+                  "productName":  "Abu Kamil POS",
+                  "directories":  {
+                                      "output":  "dist"
+                                  },
+                  "files":  [
+                                "src/**/*",
+                                "node_modules/**/*",
+                                "package.json",
+                                "!src/tools/**/*",
+                                "!**/*.bak*",
+                                "!**/*.pre-final*",
+                                "!**/*.backup-*"
+                            ],
+                  "extraResources":  [
+
+                                     ],
+                  "win":  {
+                              "target":  [
+                                             {
+                                                 "target":  "nsis",
+                                                 "arch":  [
+                                                              "x64"
+                                                          ]
+                                             }
+                                         ],
+                              "icon":  "assets/icon.ico"
+                          },
+                  "nsis":  {
+                               "oneClick":  false,
+                               "allowToChangeInstallationDirectory":  true,
+                               "installerLanguages":  [
+                                                          "ar"
+                                                      ],
+                               "language":  "1025",
+                               "installerSidebar":  null,
+                               "createDesktopShortcut":  true,
+                               "createStartMenuShortcut":  true,
+                               "shortcutName":  "Abu Kamil POS",
+                               "artifactName":  "AbuKamilPOS-Setup-${version}.${ext}"
+                           },
+                  "asar":  true,
+                  "asarUnpack":  [
+                                     "node_modules/better-sqlite3/**/*",
+                                     "node_modules/node-machine-id/**/*"
+                                 ],
+                  "icon":  "assets/icon.ico"
+              }
 }

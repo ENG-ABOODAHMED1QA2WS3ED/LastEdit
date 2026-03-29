@@ -1,71 +1,76 @@
-// ============================================================
-// src/main/matching-engine.js  — v8.0
-// محرك استيراد ومطابقة كشوف البنك
+﻿// ============================================================
+// matching-engine.js v9.0
+// Abu Kamil POS — Bank Statement Import & Matching Engine
+//
+// Zero false-positives priority.
+// Four matching layers:
+//   0. Reference number exact match
+//   1. Learning cache match
+//   2. Smart scoring (name + amount + date + context)
+//   3. Grouped match (one bank txn → multiple invoices)
 // ============================================================
 'use strict';
 
 const { calculateTransactionHash } = require('../utils/transaction-hash');
-const { BankStatementParser }      = require('./parsers/bank-statement-parser');
+const BankStatementParser           = require('./parsers/bank-statement-parser');
+const CONFIG                       = require('../config/matching-config');
+const NameNormalizer               = require('./name-normalizer');
+const MatchingFeedbackService      = require('./matching-feedback');
+
 
 // ──────────────────────────────────────────────────────────
-// SCORING CONFIG
-// ──────────────────────────────────────────────────────────
-const CONFIG = {
-  AUTO_CONFIRM_THRESHOLD:  95,   // score >= هذا → auto confirm
-  SUGGEST_THRESHOLD:       60,   // score >= هذا → suggest
-  WEIGHTS: {
-    name:    0.40,
-    amount:  0.35,
-    date:    0.15,
-    context: 0.10,
-  },
-  HOME_TRANSFER_BONUS: 5,
-  DATE_HARD_LIMIT_DAYS: 365,     // configurable
-};
-
-// ──────────────────────────────────────────────────────────
-// TRANSLITERATION MAP (Arabic → Latin)
-// ──────────────────────────────────────────────────────────
-const TRANSLIT = {
-  'ا':'a','أ':'a','إ':'a','آ':'a','ب':'b','ت':'t','ث':'th','ج':'j',
-  'ح':'h','خ':'kh','د':'d','ذ':'dh','ر':'r','ز':'z','س':'s','ش':'sh',
-  'ص':'s','ض':'d','ط':'t','ظ':'z','ع':'a','غ':'gh','ف':'f','ق':'q',
-  'ك':'k','ل':'l','م':'m','ن':'n','ه':'h','ة':'h','و':'w','ي':'y',
-  'ى':'y','لا':'la','ء':'',' ':' '
-};
-
-function transliterate(text) {
-  if (!text) return '';
-  let result = '';
-  for (const ch of text.toLowerCase()) {
-    result += TRANSLIT[ch] !== undefined ? TRANSLIT[ch] : ch;
-  }
-  return result.trim();
-}
-
-// ──────────────────────────────────────────────────────────
-// تطبيع الاسم
+// HELPER: Normalize Arabic name (lightweight, for DB storage)
 // ──────────────────────────────────────────────────────────
 function normalizeName(name) {
   if (!name) return '';
-  return name.trim()
+  let n = name.trim()
     .replace(/\s+/g, ' ')
-    .replace(/أ|إ|آ/g, 'ا')
+    .replace(/[أإآ]/g, 'ا')
     .replace(/ة/g, 'ه')
     .replace(/ى/g, 'ي')
     .toLowerCase();
+  // Merge common prefixes: ابو X → ابوX, عبد X → عبدX
+  n = n.replace(/\b(ابو|أبو|ابا|عبد|ام)\s+/g, '$1');
+  return n;
 }
 
-// ──────────────────────────────────────────────────────────
-// SCORING FUNCTIONS (Soft Gates — لا حظر)
-// ──────────────────────────────────────────────────────────
 
-/** تسجيل نقاط التاريخ — عقوبة مرة واحدة فقط هنا */
+// ──────────────────────────────────────────────────────────
+// HELPER: Flexible date parser (DD/MM/YYYY or YYYY-MM-DD)
+// ──────────────────────────────────────────────────────────
+function parseFlexDate(dateStr) {
+  if (!dateStr) return null;
+  const s = dateStr.toString().trim().substring(0, 10);
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  const slashParts = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (slashParts) {
+    const [, d, m, y] = slashParts;
+    if (parseInt(d) > 12) return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+    if (parseInt(m) > 12) return new Date(parseInt(y), parseInt(d) - 1, parseInt(m));
+    return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+  }
+
+  // YYYY-MM-DD or YYYY/MM/DD
+  const isoParts = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (isoParts) {
+    const [, y, m, d] = isoParts;
+    return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+  }
+
+  const fallback = new Date(dateStr);
+  return isNaN(fallback) ? null : fallback;
+}
+
+
+// ──────────────────────────────────────────────────────────
+// SCORING: Date
+// ──────────────────────────────────────────────────────────
 function scoreDate(txDate, invoiceDate) {
   if (!txDate || !invoiceDate) return 50;
-  const d1 = new Date(txDate);
-  const d2 = new Date(invoiceDate);
-  if (isNaN(d1) || isNaN(d2)) return 50;
+  const d1 = parseFlexDate(txDate);
+  const d2 = parseFlexDate(invoiceDate);
+  if (!d1 || !d2 || isNaN(d1) || isNaN(d2)) return 50;
 
   const days = Math.abs((d1 - d2) / 86400000);
 
@@ -78,119 +83,383 @@ function scoreDate(txDate, invoiceDate) {
   if (days <= 90)  return 38;
   if (days <= 180) return 25;
   if (days <= 365) return 15;
-  return 8; // لا يُحظر — فقط score منخفض جداً
+  return 8;
 }
 
-/** تسجيل نقاط المبلغ */
+
+// ──────────────────────────────────────────────────────────
+// SCORING: Amount
+// ──────────────────────────────────────────────────────────
 function scoreAmount(txAmount, invoiceAmount) {
   if (!txAmount || !invoiceAmount || invoiceAmount === 0) return 30;
-  const ratio = txAmount / invoiceAmount;
+  const diff = Math.abs(txAmount - invoiceAmount);
 
-  if (ratio >= 0.95 && ratio <= 1.05) return 100; // مطابقة تامة
-  if (ratio >= 0.85 && ratio <= 1.15) return 82;
-  if (ratio >= 0.70 && ratio <= 1.30) return 60;
-  if (ratio >= 0.50 && ratio <= 1.50) return 40;
-  if (ratio >= 0.20 && ratio <= 2.00) return 20;
-  return 8; // فرق ضخم — soft penalty
+  // Within bank commission tolerance (0.5 ILS) = perfect match
+  if (diff <= CONFIG.AMOUNT_EXACT_TOLERANCE) return 100;
+
+  // Calculate actual ratio and return proportional score
+  const ratio = Math.min(txAmount, invoiceAmount) / Math.max(txAmount, invoiceAmount);
+  // ratio = 18/20 = 0.90 → score = 90
+  // ratio = 15/20 = 0.75 → score = 75
+  // ratio = 10/20 = 0.50 → score = 50
+  
+  if (ratio >= 0.90) return Math.round(ratio * 100);      // 90-99 → actual %
+  if (ratio >= 0.80) return Math.round(ratio * 100 * 0.9); // 80-89 → slight penalty
+  if (ratio >= 0.50) return Math.round(ratio * 100 * 0.8); // 50-79 → moderate penalty
+  if (ratio >= 0.20) return Math.round(ratio * 100 * 0.6); // 20-49 → heavy penalty
+  return 0;
 }
 
-/** نوع الدفع بناءً على نسبة المبلغ */
-function getMatchType(txAmount, invoiceAmount) {
-  if (!invoiceAmount || invoiceAmount === 0) return 'full';
-  const ratio = txAmount / invoiceAmount;
-  if (ratio >= 0.95 && ratio <= 1.05) return 'full';
-  if (ratio < 0.95)  return 'partial';
-  return 'over';
-}
 
-/** تسجيل نقاط الاسم */
-function scoreName(payerName, customerName, nameCandidatesJson) {
+// ──────────────────────────────────────────────────────────
+// SCORING: Name (delegates to NameNormalizer with fallback)
+// ──────────────────────────────────────────────────────────
+function scoreName(payerName, customerName, nameCandidatesJson, altAccountName) {
   if (!payerName || !customerName) return 0;
+  if (payerName === '__OWNER_PAYMENT__' || payerName === '__POS_PAYMENT__') return 0;
 
-  const pNorm = normalizeName(payerName);
-  const cNorm = normalizeName(customerName);
+  // === Advanced path: NameNormalizer ===
+  try {
+    const aliases = [];
+    if (altAccountName && altAccountName.trim().length >= 3) {
+      aliases.push(altAccountName.trim());
+    }
 
-  // مطابقة تامة
-  if (pNorm === cNorm) return 100;
-
-  // مطابقة جزئية قوية (يحتوي على)
-  if (pNorm.includes(cNorm) || cNorm.includes(pNorm)) return 90;
-
-  // مطابقة transliteration
-  const pLatin = transliterate(pNorm);
-  const cLatin = transliterate(cNorm);
-  if (pLatin === cLatin) return 92;
-  if (pLatin.includes(cLatin) || cLatin.includes(pLatin)) return 82;
-
-  // مطابقة التوكنات
-  const pTokens = pNorm.split(/\s+/).filter(t => t.length > 1);
-  const cTokens = cNorm.split(/\s+/).filter(t => t.length > 1);
-  const pLatinTokens = pLatin.split(/\s+/).filter(t => t.length > 1);
-  const cLatinTokens = cLatin.split(/\s+/).filter(t => t.length > 1);
-
-  const matchedAr = pTokens.filter(pt => cTokens.some(ct => ct.includes(pt) || pt.includes(ct)));
-  const matchedLatin = pLatinTokens.filter(pt => cLatinTokens.some(ct => ct.includes(pt) || pt.includes(ct)));
-
-  const arScore    = cTokens.length ? (matchedAr.length / Math.max(pTokens.length, cTokens.length)) * 100 : 0;
-  const latinScore = cLatinTokens.length ? (matchedLatin.length / Math.max(pLatinTokens.length, cLatinTokens.length)) * 100 : 0;
-  const tokenScore = Math.max(arScore, latinScore);
-
-  // فحص name_candidates
-  let candidateScore = 0;
-  if (nameCandidatesJson) {
-    try {
-      const candidates = JSON.parse(nameCandidatesJson);
-      for (const c of candidates) {
-        const cn = normalizeName(c);
-        if (cn === cNorm || cn.includes(cNorm) || cNorm.includes(cn)) {
-          candidateScore = 85;
-          break;
+    let candidates = [payerName];
+    if (nameCandidatesJson) {
+      try {
+        const parsed = typeof nameCandidatesJson === 'string'
+          ? JSON.parse(nameCandidatesJson) : nameCandidatesJson;
+        if (Array.isArray(parsed)) {
+          for (const c of parsed) {
+            const name = typeof c === 'string' ? c : c?.name;
+            if (name && name.trim().length >= 2) candidates.push(name.trim());
+          }
         }
-        const cl = transliterate(cn);
-        if (cl === cLatin || cl.includes(cLatin) || cLatin.includes(cl)) {
-          candidateScore = Math.max(candidateScore, 78);
-        }
-      }
-    } catch (_) {}
+      } catch (_) { /* ignore parse errors */ }
+    }
+
+    const result = NameNormalizer.calculateNameScore(candidates, customerName, aliases);
+    if (result.score > 0) {
+      return Math.min(Math.round(result.score), 100);
+    }
+  } catch (err) {
+    console.warn('[scoreName] NameNormalizer error:', err.message, '- using fallback');
   }
 
-  // اسم واحد (كلمة واحدة فقط) — لا يؤكد تلقائياً
-  const isSingleToken = cTokens.length === 1 || pTokens.length === 1;
-  const rawScore = Math.max(tokenScore, candidateScore);
+  // === Fallback path: simple token scoring ===
+  function _calc(payer, customer) {
+    const pNorm = normalizeName(payer);
+    const cNorm = normalizeName(customer);
+    if (!pNorm || !cNorm) return 0;
 
-  // تقليص للاسم الواحد
-  return isSingleToken ? Math.min(rawScore, 65) : rawScore;
+    const commonWords = new Set([
+      'ابو', 'أبو', 'بن', 'ابن', 'بنت', 'ام', 'أم',
+      'عبد', 'عبدالله', 'الله', 'محمد', 'احمد', 'علي',
+      'من', 'الى', 'الي', 'تحويل', 'دفع', 'لتاجر'
+    ]);
+
+    const pTokens = pNorm.split(/\s+/).filter(t => t.length >= 2);
+    const cTokens = cNorm.split(/\s+/).filter(t => t.length >= 2);
+    if (pTokens.length === 0 || cTokens.length === 0) return 0;
+
+    const firstP = pTokens[0];
+    const firstC = cTokens[0];
+    const lastP = [...pTokens].reverse().find(t => !commonWords.has(t)) || pTokens[pTokens.length - 1];
+    const lastC = [...cTokens].reverse().find(t => !commonWords.has(t)) || cTokens[cTokens.length - 1];
+
+    const firstMatch = firstP === firstC ||
+      (firstP.length >= 3 && firstC.length >= 3 &&
+       (firstP[0] === firstC[0] && (firstP.includes(firstC) || firstC.includes(firstP))));
+    const lastMatch = lastP === lastC ||
+      (lastP.length >= 3 && lastC.length >= 3 &&
+       (lastP[0] === lastC[0] && (lastP.includes(lastC) || lastC.includes(lastP))));
+
+    if (!firstMatch && !lastMatch) return 10;
+
+    let totalW = 0, matchedW = 0;
+    for (const ct of cTokens) {
+      const w = commonWords.has(ct) ? 0.15 : (ct === firstC || ct === lastC) ? 2.0 : 1.0;
+      totalW += w;
+      for (const pt of pTokens) {
+        if (ct === pt) { matchedW += w; break; }
+        if (ct.length >= 4 && pt.length >= 4 && ct[0] === pt[0] && (ct.includes(pt) || pt.includes(ct))) {
+          matchedW += w * 0.7; break;
+        }
+      }
+    }
+
+    let score = totalW > 0 ? (matchedW / totalW) * 100 : 0;
+    if (!firstMatch && lastMatch) score *= 0.6;
+    if (firstMatch && !lastMatch) score *= 0.7;
+    return Math.round(Math.min(score, 90));
+  }
+
+  let bestScore = _calc(payerName, customerName);
+  if (altAccountName && altAccountName.trim().length >= 3) {
+    const altScore = _calc(payerName, altAccountName);
+    if (altScore > bestScore) bestScore = altScore;
+  }
+  if (nameCandidatesJson) {
+    try {
+      const cands = typeof nameCandidatesJson === 'string'
+        ? JSON.parse(nameCandidatesJson) : nameCandidatesJson;
+      if (Array.isArray(cands)) {
+        for (const c of cands) {
+          const candName = typeof c === 'string' ? c : c?.name;
+          if (!candName) continue;
+          let cs = _calc(candName, customerName);
+          if (altAccountName) cs = Math.max(cs, _calc(candName, altAccountName));
+          if (cs > bestScore) bestScore = cs;
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+  return Math.min(Math.round(bestScore), 100);
 }
 
+
 // ──────────────────────────────────────────────────────────
-// FORMAT MATCH — بدون try/catch
+// CLEAN PAYER NAME (12-step pipeline)
+// ──────────────────────────────────────────────────────────
+/**
+ * Extract the payer name from a raw bank description.
+ * Returns special tokens for non-matchable transactions:
+ *   __POS_PAYMENT__   → POS commission
+ *   __OWNER_PAYMENT__ → transfer from/to account owner only
+ *
+ * @param {string} rawName - Full bank description
+ * @param {string} accountOwner - Arabic name of account owner
+ * @param {string} accountOwnerNormalized - Normalized owner name
+ * @returns {string}
+ */
+function cleanPayerName(rawName, accountOwner, accountOwnerNormalized) {
+  if (!rawName) return '';
+  let name = rawName.trim();
+
+  // ── Step 1: POS Detection ──
+  // Only detect POS if the description STARTS with POS patterns
+  // (not if "مشتريات" appears as a note at the end of a friend payment)
+  const posStartPatterns = ['مشتريات/', 'مشتريات /', 'رسوم نقاط بيع', 'POS CHARGES'];
+  const posExactPatterns = ['عمولة تجار', 'نقاط بيع'];
+  const isPosTx = posStartPatterns.some(p => name.startsWith(p)) ||
+                  posExactPatterns.some(p => name.includes(p) && !name.includes('الدفع ل'));
+  if (isPosTx) {
+    return '__POS_PAYMENT__';
+  }
+
+  // ── Step 2: PIBC / i-Baraq Detection ──
+  // Only trigger for genuine PIBC/i-Baraq patterns:
+  //   - Contains "PIBC" or "pacs" reference
+  //   - Contains "تحويل اي-براق" or "اي-براق"
+  //   - Has owner name (abdallah) with slash-separated format typical of PIBC
+  // NOT for merchant codes like /ZY39424741
+  const hasPIBC = name.includes('/') && (
+    name.includes('تحويل اي-براق') ||
+    name.includes('اي-براق') ||
+    /pibc|pacs/i.test(name) ||
+    // Owner name with slash format (but NOT merchant "from" patterns)
+    (name.toLowerCase().includes('abdallah') && !name.includes('الدفع لتاجر') && !name.includes('الدفع لصديق') && !name.includes('Pay to merchant') && !name.includes('Pay To Friend'))
+  );
+
+  if (hasPIBC) {
+    const slashParts = name.split('/');
+    const ownerEnglish = ['abdallah abukmail', 'abu kmail mill', 'abukmail', 'abdallah abu'];
+    let payerFound = '';
+
+    for (let i = 0; i < slashParts.length; i++) {
+      const part = slashParts[i].trim();
+      const partLower = part.toLowerCase();
+      const isOwner = ownerEnglish.some(oe => partLower.includes(oe));
+      const isCT = /^ct\.?\.*$/i.test(partLower);
+      const isRef = /^(pibc|pacs)?\d{4,}/i.test(partLower) || partLower.startsWith('pibc') || partLower.startsWith('pacs');
+      const isEmpty = part.length < 2;
+
+      if (!isOwner && !isCT && !isRef && !isEmpty && /[a-zA-Z\u0600-\u06FF]/.test(part)) {
+        payerFound = part;
+      }
+    }
+
+    if (payerFound.length >= 3) return payerFound.replace(/\/CT$/gi, '').trim();
+    return '__OWNER_PAYMENT__';
+  }
+
+  // ── Step 3: Remove WALLET suffix ──
+  name = name.replace(/\s*-\s*WALLET/gi, '');
+
+  // ── Step 4: Remove USSD prefix + phone + amount ──
+  name = name.replace(/^تحويل الكتروني خدمة USSD:\s*/g, '');
+  name = name.replace(/\b0\d{9}\b\s*/g, '');           // phone numbers
+  name = name.replace(/\s*مبلغ\s*[\d.,]+\s*$/g, '');   // trailing "مبلغ XX.XX"
+
+  // ── Step 5: Remove standard Arabic prefixes ──
+  const arabicPrefixes = [
+    'تحويل الكتروني موبايل:',
+    'تحويل الكتروني Mobile:',
+    'تحويل الكتروني:',
+    'الدفع لتاجر الى', 'الدفع لتاجر إلى', 'الدفع لتاجر من',
+    'الدفع لصديق الى', 'الدفع لصديق إلى', 'الدفع لصديق من',
+    'تحويل للاخرين من',
+    'دفع لتاجر', 'دفع لصديق',
+    'اثراء',
+  ];
+  for (const prefix of arabicPrefixes) {
+    if (name.includes(prefix)) {
+      name = name.replace(prefix, '').trim();
+    }
+  }
+
+  // ── Step 6: Remove English prefixes ──
+  const englishPrefixes = [
+    'Pay to merchant to', 'Pay to merchant from',
+    'Pay To Friend to', 'Pay To Friend from',
+    'Transfer to Others from',
+    'Pay Friend', 'Pay Merchant', 'Mobile',
+  ];
+  const nameLowerCheck = name.toLowerCase();
+  for (const prefix of englishPrefixes) {
+    const idx = nameLowerCheck.indexOf(prefix.toLowerCase());
+    if (idx === 0) {
+      name = name.substring(prefix.length).trim();
+      break;
+    }
+  }
+
+  // ── Step 7: Remove reference numbers & trailing metadata ──
+  // Pattern: name /1234567 trailing... → remove everything from /digits onwards
+  name = name.replace(/\s*\/\d{4,}[\s\S]*$/g, '');  // /188769547 and everything after
+  name = name.replace(/\s*\/[A-Z]{2}\d{5,}[\s\S]*$/g, '');  // /ZY39424741 and everything after
+  name = name.replace(/\s*\/\d[\d\w]*\s*\/[\s\S]*$/g, '');  // /123/456/... patterns
+  name = name.replace(/\s+(دفع لصديق|دفع لتاجر|تحويل للاخرين|Pay to merchant|Pay To Fri|Transfer to Othe)[\s\S]*$/gi, '');
+  name = name.replace(/\s+\d{5,}ILS[\s\S]*$/g, '');
+  // Remove trailing notes like "مشتريات", "طعام", "صديق", "جبنة" (single Arabic words)
+  name = name.replace(/\s+(مشتريات|طعام|صديق|جبنه|جبنة)\s*$/g, '');
+
+  // ── Step 8: Cleanup spaces ──
+  name = name.replace(/\s+/g, ' ').trim();
+
+  // ── Step 9: Remove Arabic owner name ──
+  if (accountOwner) {
+    const ownerPatterns = [
+      'الى ' + accountOwner,
+      'إلى ' + accountOwner,
+      'الي ' + accountOwner,
+      'to ' + accountOwner,
+      accountOwner
+    ];
+    for (const op of ownerPatterns) {
+      if (name.includes(op)) {
+        const remaining = name.replace(op, '').trim();
+        if (remaining.length >= 3) {
+          name = remaining;
+          break;
+        } else {
+          return '__OWNER_PAYMENT__';
+        }
+      }
+    }
+  }
+
+  // Double check owner still present
+  if (accountOwner && name.includes(accountOwner)) {
+    const remaining = name.replace(accountOwner, '').trim();
+    if (remaining.length >= 3) name = remaining;
+    else return '__OWNER_PAYMENT__';
+  }
+
+  // ── Step 10: Normalized owner check ──
+  if (accountOwnerNormalized && name.length > 2) {
+    const normalized = name.replace(/[^\u0600-\u06FFa-zA-Z\s]/g, '').trim().toLowerCase();
+    if (normalized === accountOwnerNormalized || normalized.length < 3) {
+      return '__OWNER_PAYMENT__';
+    }
+  }
+
+  // ── Step 11: English owner removal ──
+  const ownerEnglish = ['abdallah abukmail', 'abu kmail mill', 'abukmail'];
+  for (const oen of ownerEnglish) {
+    const currentLower = name.toLowerCase().trim();
+    const oenIdx = currentLower.indexOf(oen);
+    if (oenIdx !== -1) {
+      const before = name.substring(0, oenIdx).trim();
+      const after = name.substring(oenIdx + oen.length).trim();
+      const remaining = (before + ' ' + after).trim();
+      if (remaining.length >= 3) {
+        name = remaining;
+        break;
+      } else {
+        return '__OWNER_PAYMENT__';
+      }
+    }
+  }
+
+  // ── Step 12: Final cleanup ──
+  name = name.replace(/\/CT$/gi, '').trim();
+  name = name.replace(/\/\d+$/g, '').trim();
+  name = name.replace(/\s+/g, ' ').trim();
+
+  return name;
+}
+
+
+// ──────────────────────────────────────────────────────────
+// MATCH TYPE helper
+// ──────────────────────────────────────────────────────────
+function getMatchType(txAmount, invoiceAmount) {
+    // Strict tolerance: only 0.5₪ or 1% (whichever is smaller)
+    const tolerance = Math.min(0.5, invoiceAmount * 0.01);
+    if (Math.abs(txAmount - invoiceAmount) <= tolerance) return 'full';
+    if (txAmount < invoiceAmount) return 'partial';
+    return 'over';
+  }
+
+
+// ──────────────────────────────────────────────────────────
+// FORMAT MATCH — standardized output object
 // ──────────────────────────────────────────────────────────
 function formatMatch(m) {
+    // ═══ Auto-calculate shortage if not set ═══
+    const bankAmount = m.bankTxn ? m.bankTxn.amount : 0;
+    const invoiceAmt = m.payment ? (m.payment.total_amount || m.payment.amount || 0) : 0;
+    if (!m.match_type) {
+      const tol = Math.min(0.5, invoiceAmt * 0.01);
+      if (Math.abs(bankAmount - invoiceAmt) <= tol) m.match_type = 'full';
+      else if (bankAmount < invoiceAmt) m.match_type = 'partial';
+      else m.match_type = 'over';
+    }
+    if (m.match_type === 'partial' && !m.shortage_amount) {
+      m.shortage_amount = invoiceAmt - bankAmount;
+    }
+    if (m.match_type === 'partial' && !m.security_level) {
+      const pct = invoiceAmt > 0 ? (m.shortage_amount / invoiceAmt) * 100 : 0;
+      m.security_level = pct <= 5 ? 'safe' : pct <= 15 ? 'warning' : 'danger';
+    }
   if (!m) {
     console.warn('[formatMatch] null match');
     return { match_type: 'error', _error: 'null_match' };
   }
   if (!m.bankTxn || !m.bankTxn.id) {
-    console.warn('[formatMatch] missing bankTxn.id:', JSON.stringify(m).substring(0, 150));
+    console.warn('[formatMatch] missing bankTxn.id');
     return { match_type: 'error', _error: 'missing_bank_tx_id', raw: m };
   }
-  if (!m.payment || !m.payment.id) {
+  if (!m.payment || (!m.payment.id && !m.payment._is_virtual)) {
     console.warn('[formatMatch] missing payment.id');
     return { match_type: 'error', _error: 'missing_payment_id', raw: m };
   }
 
-  const bankTxn  = m.bankTxn;
-  const payment  = m.payment;
+  const bankTxn   = m.bankTxn;
+  const payment   = m.payment;
   const breakdown = m.breakdown || {};
 
-  // remaining_after: من breakdown أولاً
   const remainingAfter = breakdown.remaining_after !== undefined
     ? breakdown.remaining_after
-    : Math.max(0, (payment.remaining_amount ?? payment.total_amount ?? 0) - (bankTxn.amount ?? 0));
+    : Math.max(0, (payment.effective_remaining ?? payment.total_amount ?? 0) - (bankTxn.amount ?? 0));
 
   return {
     bank_transaction_id: bankTxn.id,
     payment_id:          payment.id,
+    _is_virtual:         payment._is_virtual || false,
+    _invoice_id:         payment._invoice_id || payment.invoice_id || null,
     customer_name:       payment.customer_name || m.customer_name || '',
     payer_name:          bankTxn.payer_name || '',
     amount_paid:         bankTxn.amount,
@@ -199,6 +468,23 @@ function formatMatch(m) {
     match_type:          m.match_type || 'full',
     confidence:          m.confidence || 0,
     method:              m.method || 'unknown',
+
+    security_level:      m.security_level || 'normal',
+    shortage_amount:     m.shortage_amount || 0,
+    date_category:       m.date_category || 'normal',
+    days_diff:           m.days_diff || 0,
+    phone_matched:       m.phone_matched || false,
+
+    breakdown: {
+      name_score:      breakdown.name_score || 0,
+      amount_score:    breakdown.amount_score || 0,
+      date_score:      breakdown.date_score || 0,
+      context_score:   breakdown.context_score || 0,
+      date_penalty:    breakdown.date_penalty || 0,
+      phone_score:     breakdown.phone_score || 0,
+      remaining_after: remainingAfter,
+    },
+
     bankTxn: {
       id:              bankTxn.id,
       payer_name:      bankTxn.payer_name,
@@ -210,15 +496,84 @@ function formatMatch(m) {
   };
 }
 
+
 // ──────────────────────────────────────────────────────────
+// GROUPED MATCH: combination generator
+// ──────────────────────────────────────────────────────────
+function generateCombinationsOptimized(items, maxSize, targetAmount, tolerance) {
+  const results = [];
+  const MAX_RESULTS = 10;
+
+  const limited = items
+    .filter(p => (p.total_amount || p.amount || 0) > 0)
+    .sort((a, b) => (a.total_amount || a.amount || 0) - (b.total_amount || b.amount || 0))
+    .slice(0, 10);
+
+  function _gen(start, current, sum) {
+    if (results.length >= MAX_RESULTS) return;
+    if (current.length > 0 && current.length <= maxSize) {
+      if (Math.abs(sum - targetAmount) <= tolerance) {
+        results.push({ payments: [...current], total: sum, diff: sum - targetAmount });
+      }
+    }
+    if (current.length >= maxSize || sum > targetAmount + tolerance) return;
+    for (let i = start; i < limited.length; i++) {
+      const amt = limited[i].total_amount || limited[i].amount || 0;
+      current.push(limited[i]);
+      _gen(i + 1, current, sum + amt);
+      current.pop();
+    }
+  }
+  _gen(0, [], 0);
+  return results.sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
+}
+
+function findOptimalCombinations(payments, bankAmount, tolerance) {
+  if (!payments || payments.length === 0) return [];
+  tolerance = tolerance || CONFIG.GROUPED_AMOUNT_TOLERANCE;
+  const combos = [];
+  for (let size = 1; size <= Math.min(CONFIG.GROUPED_MAX_INVOICES, payments.length); size++) {
+    combos.push(...generateCombinationsOptimized(payments, size, bankAmount, tolerance));
+  }
+  return combos
+    .sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff) || a.payments.length - b.payments.length)
+    .slice(0, 5);
+}
+
+
+// ════════════════════════════════════════════════════════════
 // MATCHING ENGINE CLASS
-// ──────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+
 class MatchingEngine {
   constructor(db) {
     this.db = db;
+
+    // Feedback/learning service
+    try {
+      this.feedbackService = new MatchingFeedbackService(db);
+    } catch (err) {
+      console.warn('[MatchingEngine] Feedback service init failed:', err.message);
+      this.feedbackService = null;
+    }
+
     this._prepareStatements();
+
+    // Load account owner dynamically
+    try {
+      const ownerRow = db.prepare('SELECT bank_account_owner FROM store_settings WHERE id = 1').get();
+      this.accountOwner = ownerRow ? (ownerRow.bank_account_owner || '') : '';
+      this.accountOwnerNormalized = normalizeName(this.accountOwner);
+    } catch (e) {
+      this.accountOwner = '';
+      this.accountOwnerNormalized = '';
+      console.warn('[MatchingEngine] Could not load account owner:', e.message);
+    }
   }
 
+  // ──────────────────────────────────────────────
+  // PREPARED STATEMENTS
+  // ──────────────────────────────────────────────
   _prepareStatements() {
     this.stmtInsertBankTx = this.db.prepare(`
       INSERT INTO bank_transactions (
@@ -253,16 +608,70 @@ class MatchingEngine {
     `);
 
     this.stmtPendingPayments = this.db.prepare(`
-      SELECT p.*, 
+      SELECT p.*,
              p.amount as total_amount,
-             i.customer_name, i.customer_id, i.total as invoice_total,
-             c.is_home_transfer, c.alt_account_name as customer_alt_name
+             CASE WHEN p.remaining_amount > 0 THEN p.remaining_amount ELSE p.amount END as effective_remaining,
+             c.name AS customer_name, i.customer_id, i.total as invoice_total,
+             c.is_home_transfer, p.alt_account_name as customer_alt_name, c.phone as customer_phone
       FROM payments p
       JOIN invoices i ON p.invoice_id = i.id
       LEFT JOIN customers c ON i.customer_id = c.id
-      WHERE p.method IN ('transfer','wallet')
-      AND p.status IN ('pending','pending_match','awaiting_transfer','partial')
+      WHERE p.method IN ('transfer','wallet','debt')
+      AND (p.status IN ('pending','pending_match','awaiting_transfer') OR (p.status = 'partial' AND p.paid_amount = 0))
       ORDER BY p.created_at DESC
+    `);
+
+    // === FIX v3: Load customer aliases for cross-language matching ===
+    // === FINAL FIX v2: Query ALL unpaid invoices not yet matched to bank transactions ===
+    // Includes invoices with NO payment record AND invoices with unmatched payments
+    this.stmtUnpaidInvoicesNoPayment = this.db.prepare(`
+      SELECT 
+        NULL as id,
+        i.id as invoice_id,
+        'transfer' as method,
+        i.total as amount,
+        i.total as total_amount,
+        CASE 
+          WHEN p.id IS NOT NULL THEN COALESCE(i.total - COALESCE(p.paid_amount, 0), i.total)
+          ELSE i.total 
+        END as effective_remaining,
+        COALESCE(p.paid_amount, 0) as paid_amount,
+        0 as remaining_amount,
+        'awaiting_transfer' as status,
+        NULL as bank_reference,
+        NULL as transfer_type,
+        i.customer_id,
+        c.name AS customer_name,
+        NULL AS customer_alt_name,
+        c.is_home_transfer,
+        c.phone AS customer_phone,
+        i.total as invoice_total,
+        i.created_at as created_at,
+        i.id as _is_virtual_invoice
+      FROM invoices i
+      LEFT JOIN customers c ON i.customer_id = c.id
+      LEFT JOIN payments p ON p.invoice_id = i.id 
+        AND p.method IN ('transfer','wallet','debt')
+        AND p.status IN ('pending','pending_match','awaiting_transfer')
+      LEFT JOIN bank_transactions bt ON bt.matched_payment_id = p.id 
+        AND bt.match_status IN ('matched_auto','matched_manual')
+      WHERE i.payment_status = 'unpaid'
+        AND i.status = 'completed'
+        AND bt.id IS NULL
+      ORDER BY i.created_at DESC
+    `);
+
+    // === FINAL FIX: Statement to create real payment when virtual invoice matches ===
+    this.stmtCreatePaymentForInvoice = this.db.prepare(`
+      INSERT INTO payments (invoice_id, customer_id, method, amount, status, transfer_type, notes, bank_reference, created_at)
+      VALUES (@invoice_id, @customer_id, 'transfer', @amount, 'confirmed', 'bank_transfer', @notes, @bank_reference, datetime('now','localtime'))
+    `);
+
+    this.stmtCustomerAliases = this.db.prepare(`
+      SELECT ca.customer_id, ca.alias_name, ca.normalized_name, ca.confidence
+      FROM customer_aliases ca
+      WHERE ca.confidence >= 0.5
+      ORDER BY ca.customer_id
     `);
 
     this.stmtUpdateBankTxMatch = this.db.prepare(`
@@ -316,23 +725,25 @@ class MatchingEngine {
     `);
   }
 
-  // ──────────────────────────────────────────────
-  // IMPORT
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
+  // IMPORT BANK STATEMENT
+  // ══════════════════════════════════════════════
   importBankStatement(data, headers, fileName) {
     const batchId  = `batch_${Date.now()}`;
-    const importDt = new Date().toISOString().replace('T',' ').substring(0,19);
-
+    const importDt = new Date().toISOString().replace('T', ' ').substring(0, 19);
     let parsedTransactions = [];
 
-    // ── المسار 1: نص خام BOP ────────────────
+    // ── Path 1: Raw BOP text ──
     if (typeof data === 'string') {
-      const parser = new BankStatementParser();
-      const result = parser.parse(data);
+      const result = BankStatementParser.parsePalestineBankStatement(data);
       parsedTransactions = result.transactions;
-      console.log(`[Import] BOP format. Parsed: ${parsedTransactions.length}`);
 
-    // ── المسار 2: مصفوفة parsedEntries ──────
+      // Filter internal transfers (owner→owner)
+      if (this.accountOwnerNormalized) {
+        parsedTransactions = this._filterInternalTransfers(parsedTransactions);
+      }
+
+    // ── Path 2: Array of parsed entries ──
     } else if (Array.isArray(data)) {
       parsedTransactions = data.map((entry, idx) => {
         const rawDesc = entry.raw_description || entry.description || entry.payer_name || '';
@@ -365,13 +776,17 @@ class MatchingEngine {
           row_number:            idx,
         };
       });
-      console.log(`[Import] Standard format. Entries: ${parsedTransactions.length}`);
+
+      // Filter internal transfers
+      if (this.accountOwnerNormalized) {
+        parsedTransactions = this._filterInternalTransfers(parsedTransactions);
+      }
 
     } else {
       return { success: false, error: 'Invalid data format', imported: 0, duplicates: 0 };
     }
 
-    // ── بناء Set من الـ hashes الموجودة ─────
+    // ── De-duplicate via transaction_hash ──
     const existingHashes = new Set(
       this.stmtGetHashes.all().map(r => r.transaction_hash)
     );
@@ -383,17 +798,8 @@ class MatchingEngine {
     const doInsert = this.db.transaction(() => {
       for (const tx of parsedTransactions) {
         if (!tx.amount || tx.amount <= 0) { skipped++; continue; }
-
-        if (!tx.transaction_hash) {
-          console.warn('[Import] No hash for:', tx.payer_name, tx.amount);
-          skipped++;
-          continue;
-        }
-
-        if (existingHashes.has(tx.transaction_hash)) {
-          duplicates++;
-          continue;
-        }
+        if (!tx.transaction_hash) { skipped++; continue; }
+        if (existingHashes.has(tx.transaction_hash)) { duplicates++; continue; }
 
         this.stmtInsertBankTx.run({
           raw_date:              tx.raw_date || '',
@@ -427,139 +833,637 @@ class MatchingEngine {
     });
 
     doInsert();
-    console.log(`[Import] Done: imported=${imported}, duplicates=${duplicates}, skipped=${skipped}`);
     return { success: true, imported, duplicates, skipped };
   }
 
-  // ──────────────────────────────────────────────
+  /**
+   * Filter out internal transfers (owner → owner).
+   * Compares payer name tokens against owner name tokens.
+   * If >= 75% overlap → skip.
+   */
+  _filterInternalTransfers(transactions) {
+    const ownerTokens = this.accountOwnerNormalized.split(' ').filter(t => t.length > 1);
+    if (ownerTokens.length === 0) return transactions;
+
+    return transactions.filter(tx => {
+      const desc = (tx.raw_description || '').toLowerCase();
+      if (desc.includes('التحويل بين الحسابات') || desc.includes('تحويل بين الحسابات')) {
+        return false;
+      }
+
+      const payerNorm = normalizeName(tx.payer_name || '');
+      if (!payerNorm) return true;
+
+      const payerTokens = payerNorm.split(' ').filter(t => t.length > 1);
+      let matches = 0;
+      for (const ot of ownerTokens) {
+        for (const pt of payerTokens) {
+          if (ot === pt || (ot[0] === pt[0] && (ot.includes(pt) || pt.includes(ot)))) { matches++; break; }
+        }
+      }
+
+      const ratio = matches / Math.max(ownerTokens.length, payerTokens.length);
+      return ratio < 0.75;
+    });
+  }
+
+  // ══════════════════════════════════════════════
   // RUN MATCHING
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
   runMatching() {
+    const _matchStartTime = Date.now();
     const pendingBankTxns = this.stmtPendingBankTx.all();
-    const pendingPayments  = this.stmtPendingPayments.all();
+    const _realPendingPayments = this.stmtPendingPayments.all();
 
-    const autoConfirmed = [];
-    const suggested     = [];
-    const usedPaymentIds = new Set();
-    for (const bankTxn of pendingBankTxns) {
-      // ── طبقة 0: الرقم المرجعي ───────────────
-      const availablePayments = pendingPayments.filter(p => !usedPaymentIds.has(p.id));
-      const layer0 = this._matchLayer0(bankTxn, availablePayments);
-      if (layer0) {
-        if (layer0.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD) {
-          this._doAutoConfirm(layer0);
-          autoConfirmed.push(this.formatMatch(layer0));
-          usedPaymentIds.add(layer0.payment.id);
-        } else {
-          suggested.push(this.formatMatch(layer0));
-          usedPaymentIds.add(layer0.payment.id);
-        }
-        continue;
-      }
-
-      // ── طبقة 1: ذاكرة التعلم ────────────────
-      const layer1 = this._matchLayer1(bankTxn, availablePayments);
-      if (layer1) {
-        if (layer1.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD) {
-          this._doAutoConfirm(layer1);
-          autoConfirmed.push(this.formatMatch(layer1));
-          usedPaymentIds.add(layer1.payment.id);
-        } else {
-          suggested.push(this.formatMatch(layer1));
-          usedPaymentIds.add(layer1.payment.id);
-        }
-        continue;
-      }
-
-      // ── طبقة 2: مطابقة ذكية ─────────────────
-      const layer2Results = this._matchLayer2(bankTxn, availablePayments);
-      if (layer2Results.length > 0) {
-        const best = layer2Results[0];
-        if (best.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD) {
-          this._doAutoConfirm(best);
-          autoConfirmed.push(this.formatMatch(best));
-          usedPaymentIds.add(best.payment.id);
-        } else {
-          // أرسل أفضل 3 مقترحات
-          suggested.push({
-            ...this.formatMatch(best),
-            alternatives: layer2Results.slice(1, 3).map(r => this.formatMatch(r))
-          });
-          usedPaymentIds.add(best.payment.id);
-        }
-      }
-      // إذا لم يوجد match → يبقى في unmatched_bank
+    // === FINAL FIX: Load unpaid invoices without payment records as virtual payments ===
+    let _virtualPayments = [];
+    try {
+      const unpaidInvoices = this.stmtUnpaidInvoicesNoPayment.all();
+      _virtualPayments = unpaidInvoices.map((inv, idx) => ({
+        ...inv,
+        id: -10000 - idx,  // Negative ID to distinguish from real payments
+        _is_virtual: true,
+        _invoice_id: inv.invoice_id,
+      }));
+      console.log('[Matching] Loaded', _realPendingPayments.length, 'real payments +', _virtualPayments.length, 'virtual payments from unpaid invoices');
+    } catch (vpErr) {
+      console.warn('[Matching] Could not load virtual payments:', vpErr.message);
     }
 
-    // ── النتائج ──────────────────────────────
+    // === FIX: Filter virtual payments - exclude invoices that already have confirmed payments ===
+    let filteredVirtuals = _virtualPayments;
+    try {
+      const paidInvoiceIds = new Set(
+        this.db.prepare("SELECT DISTINCT invoice_id FROM payments WHERE status = 'confirmed'").all()
+          .map(r => r.invoice_id)
+      );
+      filteredVirtuals = _virtualPayments.filter(vp => !paidInvoiceIds.has(vp._invoice_id || vp.invoice_id));
+      if (filteredVirtuals.length !== _virtualPayments.length) {
+        console.log('[Matching] Filtered virtual payments:', _virtualPayments.length, '->', filteredVirtuals.length, '(removed already-paid invoices)');
+      }
+    } catch(fvErr) { console.warn('[Matching] Virtual filter error:', fvErr.message); }
+
+
+    // === DEDUP FIX: Remove virtual payments for invoices that already have real pending payments ===
+    const realInvoiceIds = new Set(
+      _realPendingPayments.map(p => p.invoice_id).filter(Boolean)
+    );
+    const dedupedVirtuals = filteredVirtuals.filter(vp => {
+      const vpInvId = vp._invoice_id || vp.invoice_id;
+      if (realInvoiceIds.has(vpInvId)) {
+        return false; // Real payment exists for this invoice - skip virtual
+      }
+      return true;
+    });
+    if (dedupedVirtuals.length !== filteredVirtuals.length) {
+      console.log('[Matching] Dedup: removed', filteredVirtuals.length - dedupedVirtuals.length, 'virtual payments that overlap with real payments');
+    }
+
+    const pendingPayments = [..._realPendingPayments, ...dedupedVirtuals];
+    this._pendingPaymentsCache = pendingPayments; // Cache for _acceptResult
+
+    // === FIX v3: Build aliases map (customer_id -> [alias_names]) ===
+    let aliasMap = {};
+    try {
+      const allAliases = this.stmtCustomerAliases.all();
+      for (const a of allAliases) {
+        if (!aliasMap[a.customer_id]) aliasMap[a.customer_id] = [];
+        aliasMap[a.customer_id].push(a.alias_name || a.normalized_name);
+      }
+      console.log('[Matching] Loaded', allAliases.length, 'customer aliases for', Object.keys(aliasMap).length, 'customers');
+    } catch (aliasErr) {
+      console.warn('[Matching] Could not load aliases:', aliasErr.message);
+      aliasMap = {};
+    }
+
+    const autoConfirmed    = [];
+    const suggested        = [];
+    const groupedMatches   = [];
+    const usedPaymentIds   = new Set();
+    const usedBankIds      = new Set();
+
+    for (const bankTxn of pendingBankTxns) {
+      if (usedBankIds.has(bankTxn.id)) continue;
+
+      const availablePayments = pendingPayments.filter(p => !usedPaymentIds.has(p.id));
+
+      // ════════════════════════════════════════
+      // LAYER 0: Reference number exact match
+      // ════════════════════════════════════════
+      const layer0 = this._matchLayer0(bankTxn, availablePayments);
+      if (layer0) {
+        this._acceptResult(layer0, suggested, suggested, usedPaymentIds, usedBankIds);
+        continue;
+      }
+
+      // ════════════════════════════════════════
+      // LAYER 1: Learning cache
+      // ════════════════════════════════════════
+      const layer1 = this._matchLayer1(bankTxn, availablePayments);
+      if (layer1) {
+        this._acceptResult(layer1, suggested, suggested, usedPaymentIds, usedBankIds);
+        continue;
+      }
+
+      // ════════════════════════════════════════
+      // LAYER 2: Smart scoring
+      // ════════════════════════════════════════
+      const cleanedPayer = cleanPayerName(bankTxn.payer_name, this.accountOwner, this.accountOwnerNormalized);
+      const layer2Results = this._matchLayer2(bankTxn, availablePayments, cleanedPayer, aliasMap);
+
+      let layer2Accepted = false;
+      if (layer2Results.length > 0) {
+        const best = layer2Results[0];
+        const bestAmtScore = best.breakdown ? best.breakdown.amount_score : 0;
+
+        // Strict gate: high confidence AND reasonable amount match
+        if (best.confidence >= CONFIG.LAYER2_MIN_CONFIDENCE && bestAmtScore >= CONFIG.LAYER2_MIN_AMOUNT_SCORE) {
+          // === AUTO-CONFIRM DISABLED (safety mode) ===
+          // All matches go to suggestions - user must approve manually
+
+          // === LAYER 2.5: If bank amount > payment amount, look for complementary invoices ===
+          const bestPayAmt = best.payment.total_amount || best.payment.amount || 0;
+          const bankAmt = bankTxn.amount;
+          const diff = bankAmt - bestPayAmt;
+
+          if (diff > 0.5 && best.payment.customer_id) {
+            // Bank sent MORE than one invoice - find other invoices for same customer
+            const sameCustomerPayments = pendingPayments.filter(p =>
+              !usedPaymentIds.has(p.id) &&
+              p.id !== best.payment.id &&
+              (p.customer_id === best.payment.customer_id ||
+               (p.customer_name && best.payment.customer_name &&
+                p.customer_name.trim() === best.payment.customer_name.trim()))
+            );
+
+            if (sameCustomerPayments.length > 0) {
+              // Try to find combination that fills the gap
+              const targetAmount = bankAmt;
+              let bestCombo = null;
+              let bestComboDiff = Infinity;
+
+              // Try each single complementary payment first
+              for (const cp of sameCustomerPayments) {
+                const cpAmt = cp.total_amount || cp.amount || 0;
+                const comboTotal = bestPayAmt + cpAmt;
+                const comboDiff = Math.abs(targetAmount - comboTotal);
+                if (comboDiff < bestComboDiff && comboDiff <= targetAmount * 0.05) {
+                  bestComboDiff = comboDiff;
+                  bestCombo = [best.payment, cp];
+                }
+              }
+
+              // Try pairs of complementary payments
+              if (!bestCombo && sameCustomerPayments.length >= 2) {
+                for (let i = 0; i < sameCustomerPayments.length; i++) {
+                  for (let j = i + 1; j < sameCustomerPayments.length; j++) {
+                    const cpAmt1 = sameCustomerPayments[i].total_amount || sameCustomerPayments[i].amount || 0;
+                    const cpAmt2 = sameCustomerPayments[j].total_amount || sameCustomerPayments[j].amount || 0;
+                    const comboTotal = bestPayAmt + cpAmt1 + cpAmt2;
+                    const comboDiff = Math.abs(targetAmount - comboTotal);
+                    if (comboDiff < bestComboDiff && comboDiff <= targetAmount * 0.05) {
+                      bestComboDiff = comboDiff;
+                      bestCombo = [best.payment, sameCustomerPayments[i], sameCustomerPayments[j]];
+                    }
+                  }
+                }
+              }
+
+              if (bestCombo) {
+                // Found complementary invoices! Push as grouped suggestion
+                const comboTotal = bestCombo.reduce((s, p) => s + (p.total_amount || p.amount || 0), 0);
+                const comboDiff = Math.abs(bankAmt - comboTotal);
+                const amountScore = comboDiff === 0 ? 100 : Math.max(0, 100 - comboDiff * 15);
+                const groupConfidence = Math.round(best.breakdown.name_score * 0.35 + amountScore * 0.55 + 85 * 0.10);
+
+                console.log('[Layer 2.5] Found grouped match:', best.payment.customer_name,
+                  '- invoices:', bestCombo.map(p => (p.total_amount || p.amount)).join('+'), '=', comboTotal,
+                  'vs bank:', bankAmt, '(diff:', comboDiff.toFixed(2), ')');
+
+                suggested.push({
+                  ...formatMatch(best),
+                  match_type: 'grouped_complementary',
+                  confidence: groupConfidence,
+                  confidence_note: 'grouped_invoices',
+                  grouped_payments: bestCombo.map(p => ({
+                    id: p.id,
+                    amount: p.total_amount || p.amount || 0,
+                    invoice_id: p.invoice_id || p._invoice_id,
+                    customer_name: p.customer_name
+                  })),
+                  payment_ids: bestCombo.map(p => p.id),
+                  total_grouped_amount: comboTotal,
+                  alternatives: layer2Results.slice(1, 3).map(r => formatMatch(r))
+                });
+
+                // Mark all payments in combo as used
+                for (const cp of bestCombo) usedPaymentIds.add(cp.id);
+                usedBankIds.add(bankTxn.id);
+                layer2Accepted = true;
+              } else {
+                // No good combo found - show single match as before
+                suggested.push({
+                  ...formatMatch(best),
+                  confidence_note: best.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD ? 'high_confidence' : 'normal',
+                  has_remaining: true,
+                  remaining_amount: diff,
+                  alternatives: layer2Results.slice(1, 3).map(r => formatMatch(r))
+                });
+                usedPaymentIds.add(best.payment.id);
+                usedBankIds.add(bankTxn.id);
+                layer2Accepted = true;
+              }
+            } else {
+              // No other payments from same customer
+              suggested.push({
+                ...formatMatch(best),
+                confidence_note: best.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD ? 'high_confidence' : 'normal',
+                alternatives: layer2Results.slice(1, 3).map(r => formatMatch(r))
+              });
+              usedPaymentIds.add(best.payment.id);
+              usedBankIds.add(bankTxn.id);
+              layer2Accepted = true;
+            }
+          } else {
+            // Exact or smaller amount - single match
+            // ENHANCEMENT: Find ALL invoices for this customer to show full picture
+            let allCustomerInvoices = [];
+            try {
+            console.log('[DEBUG-INVOICES] custId:', best.payment.customer_id, '| custName:', best.payment.customer_name, '| pendingPayments count:', pendingPayments.length, '| best.payment.id:', best.payment.id);
+            const debugMatches = pendingPayments.filter(p => (p.customer_name || '').trim() === (best.payment.customer_name || '').trim()); console.log('[DEBUG-INVOICES] Name matches in pendingPayments:', debugMatches.length, debugMatches.map(p => ({id:p.id, amt:p.total_amount||p.amount, name:p.customer_name})));
+              const custId = best.payment.customer_id;
+              const custName = (best.payment.customer_name || '').trim();
+              if (custId || custName) {
+                allCustomerInvoices = pendingPayments.filter(p => {
+                  if (usedPaymentIds.has(p.id) && p.id !== best.payment.id) return false;
+                  return (custId && p.customer_id === custId) ||
+                         (custName && p.customer_name && p.customer_name.trim() === custName);
+                }).map(p => ({
+                  id: p.id,
+                  invoice_id: p.invoice_id || p._invoice_id,
+                  amount: p.total_amount || p.amount || 0,
+                  customer_name: p.customer_name
+                }));
+              }
+            } catch(e) { /* ignore */ }
+
+            const totalCustomerInvoices = allCustomerInvoices.reduce((s, inv) => s + inv.amount, 0);
+            const bankAmount = bankTxn.amount;
+            const totalShortage = totalCustomerInvoices - bankAmount;
+
+            suggested.push({
+              ...formatMatch(best),
+              confidence_note: best.confidence >= CONFIG.AUTO_CONFIRM_THRESHOLD ? 'high_confidence' : 'normal',
+              alternatives: layer2Results.slice(1, 3).map(r => formatMatch(r)),
+              // Customer invoice summary
+              all_customer_invoices: allCustomerInvoices.length > 1 ? allCustomerInvoices : undefined,
+              total_customer_invoices_amount: allCustomerInvoices.length > 1 ? totalCustomerInvoices : undefined,
+              total_shortage_all_invoices: allCustomerInvoices.length > 1 ? totalShortage : undefined,
+            });
+
+            if (allCustomerInvoices.length > 1) {
+              console.log('[Match] Customer', best.payment.customer_name, 'has', allCustomerInvoices.length, 
+                'invoices totaling', totalCustomerInvoices, 'vs transfer', bankAmount, 
+                '| Total shortage:', totalShortage);
+            }
+            usedPaymentIds.add(best.payment.id);
+            usedBankIds.add(bankTxn.id);
+            layer2Accepted = true;
+          }
+        }
+      }
+
+      // ════════════════════════════════════════
+      // LAYER 3: Grouped match
+      // ════════════════════════════════════════
+      if (!layer2Accepted && !usedBankIds.has(bankTxn.id)) {
+        const groupResult = this._matchLayer3(bankTxn, pendingPayments, usedPaymentIds, cleanedPayer, aliasMap);
+        if (groupResult) {
+          groupedMatches.push(groupResult);
+          groupResult.payment_ids.forEach(id => usedPaymentIds.add(id));
+          usedBankIds.add(bankTxn.id);
+        }
+      }
+    }
+
+    // ════════════════════════════════════════
+    // LAYER 2.6: Smart Multi-Transfer Grouping (post-processing)
+    // Groups multiple bank transfers from same customer against their invoices
+    // Example: transfers 18+4=22 vs invoice 20 => show smart suggestion
+    // ════════════════════════════════════════
+    try {
+      // Step 1: Group unmatched bank transactions by customer (payer_name)
+      const unmatchedBankForGrouping = pendingBankTxns.filter(tx => !usedBankIds.has(tx.id));
+      
+      // Also consider suggested matches that are partial (shortage exists)
+      const partialSuggestions = suggested.filter(s => 
+        s.match_type === 'partial' && s.shortage_amount > 0
+      );
+      
+      if (partialSuggestions.length > 0 && unmatchedBankForGrouping.length > 0) {
+        const processedPartials = new Set();
+        
+        for (const partial of partialSuggestions) {
+          if (processedPartials.has(partial.bank_transaction_id)) continue;
+          
+          const partialPayerName = partial.bankTxn?.payer_name || '';
+          if (!partialPayerName) continue;
+          
+          // Find other unmatched bank transfers from same payer
+          const samePayer = unmatchedBankForGrouping.filter(tx => {
+            if (usedBankIds.has(tx.id)) return false;
+            if (tx.id === partial.bank_transaction_id) return false;
+            
+            // Compare payer names (normalized)
+            const txPayer = (tx.payer_name || '').trim();
+            const partPayer = partialPayerName.trim();
+            
+            if (txPayer === partPayer) return true;
+            
+            // Fuzzy: check if one name contains the other
+            const txNorm = txPayer.replace(/\s+/g, ' ').toLowerCase();
+            const partNorm = partPayer.replace(/\s+/g, ' ').toLowerCase();
+            // Guard: first char must match to prevent روان≠مروان false positives
+            if (txNorm.length >= 3 && partNorm.length >= 3 &&
+                txNorm[0] === partNorm[0] &&
+                (txNorm.includes(partNorm) || partNorm.includes(txNorm))) return true;
+            
+            // Check first+last name match
+            const txParts = txNorm.split(' ').filter(w => w.length > 1);
+            const partParts = partNorm.split(' ').filter(w => w.length > 1);
+            if (txParts.length >= 2 && partParts.length >= 2) {
+              if (txParts[0] === partParts[0] && txParts[txParts.length-1] === partParts[partParts.length-1]) return true;
+            }
+            
+            return false;
+          });
+          
+          if (samePayer.length === 0) continue;
+          
+          // Calculate totals
+          const partialBankAmount = partial.bankTxn?.amount || partial.amount_paid || 0;
+          const invoiceAmount = partial.invoice_amount || 0;
+          const shortage = partial.shortage_amount || 0;
+          
+          // Check if any unmatched transfer covers the shortage
+          for (const otherTx of samePayer) {
+            const otherAmount = otherTx.amount || 0;
+            const combinedTotal = partialBankAmount + otherAmount;
+            const combinedDiff = combinedTotal - invoiceAmount;
+            const combinedDiffAbs = Math.abs(combinedDiff);
+            
+            // Accept if combined amount is close to invoice (within 5% or 3 ILS)
+            if (combinedDiffAbs <= Math.max(invoiceAmount * 0.05, 3)) {
+              
+              // Determine combined match type
+              let combinedMatchType = 'full';
+              let combinedSecurity = 'safe';
+              let combinedShortage = 0;
+              
+              if (combinedDiff < -0.5) {
+                combinedMatchType = 'partial';
+                combinedShortage = Math.abs(combinedDiff);
+                const pct = (combinedShortage / invoiceAmount) * 100;
+                combinedSecurity = pct <= 5 ? 'safe' : pct <= 20 ? 'warning' : 'danger';
+              } else if (combinedDiff > 0.5) {
+                combinedMatchType = 'over';
+                combinedSecurity = 'safe';
+              }
+              
+              // Build smart grouped suggestion
+              const amountScore = combinedDiffAbs <= 0.5 ? 100 : Math.round((1 - combinedDiffAbs / invoiceAmount) * 100);
+              const nameScore = partial.breakdown?.name_score || 85;
+              const smartConfidence = Math.round(nameScore * 0.50 + amountScore * 0.35 + 90 * 0.15);
+              
+              console.log('[Layer 2.6] Smart multi-transfer group:', partialPayerName);
+              console.log('  Transfers:', partialBankAmount, '+', otherAmount, '=', combinedTotal);
+              console.log('  Invoice:', invoiceAmount, '| Diff:', combinedDiff.toFixed(2));
+              console.log('  Type:', combinedMatchType, '| Security:', combinedSecurity);
+              
+              // Remove the original partial suggestion
+              const partialIdx = suggested.indexOf(partial);
+              if (partialIdx >= 0) {
+                suggested.splice(partialIdx, 1);
+              }
+              
+              // Add smart grouped suggestion
+              suggested.push({
+                ...partial,
+                match_type: 'multi_transfer',
+                confidence: smartConfidence,
+                confidence_note: 'multi_transfer_grouped',
+                security_level: combinedSecurity,
+                shortage_amount: combinedShortage,
+                amount_paid: combinedTotal,
+                
+                // Multi-transfer specific fields
+                bank_transfers: [
+                  {
+                    id: partial.bank_transaction_id,
+                    amount: partialBankAmount,
+                    payer_name: partialPayerName,
+                    date: partial.bankTxn?.parsed_date || partial.bankTxn?.tx_date
+                  },
+                  {
+                    id: otherTx.id,
+                    amount: otherAmount,
+                    payer_name: otherTx.payer_name,
+                    date: otherTx.parsed_date || otherTx.tx_date
+                  }
+                ],
+                total_transferred: combinedTotal,
+                invoice_amount: invoiceAmount,
+                excess_amount: combinedDiff > 0 ? combinedDiff : 0,
+                
+                breakdown: {
+                  ...partial.breakdown,
+                  amount_score: amountScore
+                }
+              });
+              
+              // Mark other transfer as used
+              usedBankIds.add(otherTx.id);
+              processedPartials.add(partial.bank_transaction_id);
+              
+              console.log('[Layer 2.6] Created multi-transfer suggestion: confidence', smartConfidence);
+              break; // Found a match for this partial
+            }
+          }
+        }
+      }
+      
+      console.log('[Layer 2.6] Processing complete');
+    } catch (layer26Err) {
+      console.warn('[Layer 2.6] Error:', layer26Err.message);
+    }
+
+    // ── Build results ──
     const matchedBankTxIds = new Set([
       ...autoConfirmed.map(m => m.bank_transaction_id),
       ...suggested.map(m => m.bank_transaction_id),
+      ...groupedMatches.map(m => m.bankTxn.id),
     ]);
     const matchedPaymentIds = new Set([
       ...autoConfirmed.map(m => m.payment_id),
     ]);
 
-    // unmatched_bank: spread كامل — يشمل transaction_hash, match_status, direction, إلخ
     const unmatchedBank = pendingBankTxns
       .filter(tx => !matchedBankTxIds.has(tx.id))
       .map(tx => ({ ...tx }));
 
     const unmatchedPayments = pendingPayments
-      .filter(p => !matchedPaymentIds.has(p.id))
+      .filter(p => !matchedPaymentIds.has(p.id) && !p._is_virtual)
       .map(p => ({
-        id:            p.id,
-        customer_name: p.customer_name,
-        total_amount:  p.total_amount,
+        id:               p.id,
+        customer_name:    p.customer_name,
+        total_amount:     p.total_amount,
         remaining_amount: p.remaining_amount,
-        bank_reference:p.bank_reference,
-        status:        p.status,
-        created_at:    p.created_at,
+        bank_reference:   p.bank_reference,
+        status:           p.status,
+        created_at:       p.created_at,
       }));
 
+    // ── Smart warnings ──
+    const warnings = this._generateWarnings(suggested);
+
+    const elapsedMs = Date.now() - _matchStartTime;
+    if (elapsedMs > CONFIG.PERFORMANCE_WARN_MS) {
+      console.warn('[MatchingEngine] Slow run:', elapsedMs, 'ms');
+    }
+
     return {
-      success:           true,
-      auto_confirmed:    autoConfirmed.filter(m => m.match_type !== 'error'),
-      suggested:         suggested.filter(m => m.match_type !== 'error'),
-      unmatched_bank:    unmatchedBank,
+      success:            true,
+      auto_confirmed:     autoConfirmed.filter(m => m.match_type !== 'error'),
+      suggested:          suggested.filter(m => m.match_type !== 'error'),
+      unmatched_bank:     unmatchedBank,
+      grouped_matches:    groupedMatches,
       unmatched_payments: unmatchedPayments,
+      warnings:           warnings,
+      performance: {
+        bank_transactions:  pendingBankTxns.length,
+        pending_payments:   pendingPayments.length,
+        processing_time_ms: elapsedMs,
+      }
     };
+  }
+
+  /**
+   * Route a match result into auto-confirmed or suggested bucket.
+   */
+  _acceptResult(result, autoConfirmed, suggested, usedPaymentIds, usedBankIds) {
+    // ═══ AUTO-CONFIRM COMPLETELY DISABLED (Safety Mode) ═══
+    // ALL matches from ALL layers go to suggestions - requires manual approval
+    const formatted = formatMatch(result);
+
+    // ═══ ENHANCEMENT: Find ALL invoices for this customer ═══
+    try {
+      const custName = (result.payment.customer_name || '').trim();
+      if (custName && this._pendingPaymentsCache) {
+        const allInvoices = this._pendingPaymentsCache.filter(p => {
+          if (usedPaymentIds.has(p.id) && p.id !== result.payment.id) return false;
+          return (p.customer_name || '').trim() === custName;
+        }).map(p => ({
+          id: p.id,
+          invoice_id: p.invoice_id || p._invoice_id || p.id,
+          amount: p.total_amount || p.amount || 0,
+          customer_name: p.customer_name
+        }));
+
+        // Deduplicate by invoice_id (same invoice can be real + virtual with different payment IDs)
+        const seen = new Set();
+        const uniqueInvoices = allInvoices.filter(inv => {
+          const key = (inv.invoice_id || inv.id) + '_' + inv.amount; if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        if (uniqueInvoices.length > 1) {
+          const totalInv = uniqueInvoices.reduce((s, inv) => s + inv.amount, 0);
+          const bankAmt = result.bankTxn ? result.bankTxn.amount : 0;
+          formatted.all_customer_invoices = uniqueInvoices;
+          formatted.total_customer_invoices_amount = totalInv;
+          formatted.total_shortage_all_invoices = totalInv - bankAmt;
+          console.log('[AcceptResult] Customer', custName, 'has', uniqueInvoices.length,
+            'invoices totaling', totalInv, 'vs transfer', bankAmt);
+        }
+      }
+    } catch(e) { console.warn('[AcceptResult] Invoice scan error:', e.message); }
+
+    suggested.push(formatted);
+    usedPaymentIds.add(result.payment.id);
+    usedBankIds.add(result.bankTxn.id);
+  }
+
+  /**
+   * Generate smart warnings for the suggested list.
+   */
+  _generateWarnings(suggested) {
+    const warnings = [];
+
+    // Duplicate amounts warning
+    const amountGroups = {};
+    suggested.forEach(m => {
+      const key = String(m.amount_paid || 0);
+      if (!amountGroups[key]) amountGroups[key] = [];
+      amountGroups[key].push(m);
+    });
+    Object.entries(amountGroups).forEach(([amt, matches]) => {
+      if (matches.length > 1) {
+        warnings.push({
+          type: 'duplicate_amounts',
+          message: matches.length + ' مطابقات محتملة للمبلغ ' + amt + ' شيكل - يرجى التحقق يدويا',
+          count: matches.length,
+          amount: parseFloat(amt)
+        });
+      }
+    });
+
+    // Weak name warnings
+    suggested.forEach(m => {
+      if (m.confidence < 75 && m.breakdown && m.breakdown.name_score < 60) {
+        warnings.push({
+          type: 'weak_name',
+          message: 'مطابقة ضعيفة: ' + (m.payer_name || '') + ' مع ' + (m.customer_name || ''),
+          bank_id: m.bank_transaction_id,
+          confidence: m.confidence
+        });
+      }
+    });
+
+    return warnings;
   }
 
   // public alias
   formatMatch(m) { return formatMatch(m); }
 
-  // ──────────────────────────────────────────────
-  // LAYER 0: الرقم المرجعي
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
+  // LAYER 0: Reference number exact match
+  // ══════════════════════════════════════════════
   _matchLayer0(bankTxn, pendingPayments) {
-    // أولا: مطابقة tx_reference المستخرج مباشرة
+    // Direct tx_reference match
     if (bankTxn.tx_reference) {
       const payment = pendingPayments.find(p =>
-        p.bank_reference &&
-        p.bank_reference.trim() === bankTxn.tx_reference.trim()
+        p.bank_reference && p.bank_reference.trim() === bankTxn.tx_reference.trim()
       );
       if (payment) return this._buildLayer0Result(bankTxn, payment);
     }
 
-    // ثانيا: بحث عن bank_reference داخل raw_description
-    const desc = bankTxn.raw_description || "";
+    // Search for bank_reference inside raw_description
+    const desc = bankTxn.raw_description || '';
     for (const p of pendingPayments) {
       if (p.bank_reference && p.bank_reference.trim().length >= 6) {
         if (desc.includes(p.bank_reference.trim())) {
-          console.log("[Layer0] Found ref " + p.bank_reference + " inside raw_description");
           return this._buildLayer0Result(bankTxn, p);
         }
       }
     }
 
     return null;
-
   }
 
   _buildLayer0Result(bankTxn, payment) {
-    const matchType = getMatchType(bankTxn.amount, payment.total_amount);
-    const remaining = Math.max(0, (payment.remaining_amount ?? payment.total_amount ?? 0) - bankTxn.amount);
+    const matchType = getMatchType(bankTxn.amount, payment.total_amount || payment.amount || 0);
+    const remaining = Math.max(0, (payment.effective_remaining ?? payment.total_amount ?? 0) - bankTxn.amount);
 
     return {
       bankTxn,
@@ -569,17 +1473,17 @@ class MatchingEngine {
       method:        'reference_exact',
       match_type:    matchType,
       breakdown: {
-        name_score:   100,
-        amount_score: 100,
-        date_score:   100,
+        name_score:      100,
+        amount_score:    100,
+        date_score:      100,
         remaining_after: remaining,
       }
     };
   }
 
-  // ──────────────────────────────────────────────
-  // LAYER 1: ذاكرة التعلم
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
+  // LAYER 1: Learning cache
+  // ══════════════════════════════════════════════
   _matchLayer1(bankTxn, pendingPayments) {
     const learned = this.stmtLearningLookup.get(bankTxn.payer_name_normalized || bankTxn.payer_name);
     if (!learned) return null;
@@ -587,12 +1491,15 @@ class MatchingEngine {
     const payment = pendingPayments.find(p => p.customer_id === learned.customer_id);
     if (!payment) return null;
 
-    const amtScore  = scoreAmount(bankTxn.amount, payment.total_amount);
-    const matchType = getMatchType(bankTxn.amount, payment.total_amount);
-    const remaining = Math.max(0, (payment.remaining_amount ?? payment.total_amount ?? 0) - bankTxn.amount);
+    const amtScore = scoreAmount(bankTxn.amount, payment.total_amount);
+    // Skip if amount is way off
+    if (amtScore < 25) return null;
 
-    // score = learned.confidence weighted with amount
-    const confidence = Math.round(learned.confidence * 0.65 + amtScore * 0.35);
+    const matchType = getMatchType(bankTxn.amount, payment.total_amount || payment.amount || 0);
+    const remaining = Math.max(0, (payment.effective_remaining ?? payment.total_amount ?? 0) - bankTxn.amount);
+    const confidence = Math.round(
+      learned.confidence * CONFIG.LEARNED_NAME_WEIGHT + amtScore * CONFIG.LEARNED_AMOUNT_WEIGHT
+    );
 
     return {
       bankTxn,
@@ -602,84 +1509,287 @@ class MatchingEngine {
       method:        'learning_cache',
       match_type:    matchType,
       breakdown: {
-        name_score:   learned.confidence,
-        amount_score: amtScore,
-        date_score:   100,
+        name_score:      learned.confidence,
+        amount_score:    amtScore,
+        date_score:      100,
         remaining_after: remaining,
       }
     };
   }
 
-  // ──────────────────────────────────────────────
-  // LAYER 2: المطابقة الذكية
-  // ──────────────────────────────────────────────
-  _matchLayer2(bankTxn, pendingPayments) {
+  // ══════════════════════════════════════════════
+  // LAYER 2: Smart scoring
+  // ══════════════════════════════════════════════
+  _matchLayer2(bankTxn, pendingPayments, cleanedPayer, aliasMap) {
+    aliasMap = aliasMap || {};
     const results = [];
+    const startTime = Date.now();
+
+    const payerName = cleanedPayer || bankTxn.payer_name || '';
+    if (payerName === '__OWNER_PAYMENT__' || payerName === '__POS_PAYMENT__') return [];
 
     for (const payment of pendingPayments) {
-      const nameScore   = scoreName(bankTxn.payer_name, payment.customer_name, bankTxn.name_candidates_json);
-      const amountScore = scoreAmount(bankTxn.amount, payment.total_amount);
-      const dateScore   = scoreDate(bankTxn.parsed_date, payment.created_at);
-      const contextScore = payment.is_home_transfer ? 60 : 40;
+      const paymentAmount = payment.total_amount || payment.amount || 0;
+      const bankAmount = bankTxn.amount;
+      if (paymentAmount <= 0) continue;
 
+      // ── Amount ratio pre-filter (strict gate) ──
+      const amtRatio = paymentAmount > 0 ? bankAmount / paymentAmount : 0;
+      if (amtRatio < CONFIG.AMOUNT_MIN_RATIO || amtRatio > CONFIG.AMOUNT_MAX_RATIO) continue;
+
+      // ── Date pre-filter ──
+      let daysDiff = 999;
+      if (bankTxn.parsed_date && payment.created_at) {
+        const bankDate = parseFlexDate(bankTxn.parsed_date);
+        const payDate  = parseFlexDate(payment.created_at);
+        if (bankDate && payDate) daysDiff = Math.abs((bankDate - payDate) / 86400000);
+      }
+
+      let dateCategory = 'normal';
+      let datePenalty = 0;
+      if (daysDiff <= CONFIG.DATE_NORMAL_DAYS) {
+        dateCategory = 'normal';
+      } else if (daysDiff <= CONFIG.DATE_DELAYED_DAYS) {
+        dateCategory = 'delayed';
+        datePenalty = CONFIG.DATE_PENALTY_DELAYED;
+      } else if (daysDiff <= CONFIG.DATE_VERY_DELAYED_DAYS) {
+        dateCategory = 'very_delayed';
+        datePenalty = CONFIG.DATE_PENALTY_VERY_DELAYED;
+      } else if (daysDiff <= CONFIG.DATE_HARD_LIMIT_DAYS) {
+        dateCategory = 'very_old';
+        datePenalty = CONFIG.DATE_PENALTY_VERY_DELAYED + 10; // extra penalty
+      } else {
+        continue; // Beyond hard limit
+      }
+
+      // ── Name score (with altAccount) ──
+      // === FIX v3: Include aliases in name scoring ===
+      const customerAliases = aliasMap[payment.customer_id] || [];
+      let nameScore = scoreName(
+        payerName,
+        payment.customer_name,
+        bankTxn.name_candidates_json,
+        payment.customer_alt_name
+      );
+      // Also try scoring against each customer alias
+      for (const alias of customerAliases) {
+        const aliasScore = scoreName(payerName, alias, bankTxn.name_candidates_json, null);
+        if (aliasScore > nameScore) nameScore = aliasScore;
+      }
+
+      // ── Phone matching bonus ──
+      let phoneScore = 0;
+      if (payment.customer_phone && payment.customer_phone.length > 6) {
+        const cleanPhone = payment.customer_phone.replace(/\D/g, '').slice(-7);
+        if (bankTxn.raw_description && bankTxn.raw_description.replace(/\D/g, '').includes(cleanPhone)) {
+          phoneScore = CONFIG.NAME_PHONE_SCORE;
+        }
+      }
+
+      const effectiveNameScore = Math.max(nameScore, phoneScore);
+
+      // ── Minimum name gate ──
+      if (effectiveNameScore < CONFIG.NAME_MIN_SCORE) continue;
+
+      // ── Compute remaining scores ──
+      const amountScore  = scoreAmount(bankTxn.amount, paymentAmount);
+      const dateScore    = scoreDate(bankTxn.parsed_date, payment.created_at);
+      const contextScore = payment.is_home_transfer ? CONFIG.CONTEXT_HOME_TRANSFER : CONFIG.CONTEXT_NORMAL;
+
+      // ── Match type & security level ──
+      const amountDiff = Math.abs(bankAmount - paymentAmount);
+      let matchType = 'full';
+      let securityLevel = 'normal';
+      let shortageAmount = 0;
+
+      // FIX: Only 'full' if truly within commission tolerance (0.5 ILS)
+      // AND bank amount >= invoice amount (no real shortage)
+      if (amountDiff <= CONFIG.AMOUNT_EXACT_TOLERANCE && bankAmount >= paymentAmount - CONFIG.AMOUNT_EXACT_TOLERANCE) {
+        matchType = 'full';
+      } else if (bankAmount < paymentAmount) {
+        matchType = 'partial';
+        shortageAmount = paymentAmount - bankAmount;
+        const shortagePct = (shortageAmount / paymentAmount) * 100;
+
+        // Partial payments need higher name certainty
+        if (effectiveNameScore < CONFIG.NAME_MIN_SCORE_PARTIAL) continue;
+
+        if (shortagePct <= CONFIG.PARTIAL_SAFE_PCT)         securityLevel = 'safe';
+        else if (shortagePct <= CONFIG.PARTIAL_WARNING_PCT) securityLevel = 'warning';
+        else                                                securityLevel = 'danger';
+      } else if (bankAmount > paymentAmount) {
+        matchType = 'over';
+      }
+
+      // ── Final confidence calculation ──
       let total =
-        nameScore   * CONFIG.WEIGHTS.name +
-        amountScore * CONFIG.WEIGHTS.amount +
-        dateScore   * CONFIG.WEIGHTS.date +
-        contextScore * CONFIG.WEIGHTS.context;
+        effectiveNameScore * CONFIG.WEIGHTS.name +
+        amountScore        * CONFIG.WEIGHTS.amount +
+        dateScore          * CONFIG.WEIGHTS.date +
+        contextScore       * CONFIG.WEIGHTS.context;
 
       if (payment.is_home_transfer) total += CONFIG.HOME_TRANSFER_BONUS;
+
+      // Learning boost
+      if (this.feedbackService) {
+        try {
+          const boost = this.feedbackService.getConfidenceBoost(
+            bankTxn.payer_name || '',
+            payment.customer_name || ''
+          );
+          if (boost > 0) total += boost * CONFIG.LEARNING_BOOST_MULTIPLIER;
+          if (boost < 0) total -= CONFIG.LEARNING_NEGATIVE_PENALTY;
+        } catch (_) { /* non-critical */ }
+      }
+
+      total -= datePenalty;
       total = Math.min(100, Math.round(total));
 
-      if (total < CONFIG.SUGGEST_THRESHOLD) continue;
-      if (nameScore < 20) continue; // reject if names are completely different
+      // Threshold gate
+      const minThreshold = matchType === 'partial' ? CONFIG.PARTIAL_MIN_THRESHOLD : CONFIG.FULL_MIN_THRESHOLD;
+      if (total < minThreshold) continue;
 
-      const matchType = getMatchType(bankTxn.amount, payment.total_amount);
-      const remaining = Math.max(0, (payment.remaining_amount ?? payment.total_amount ?? 0) - bankTxn.amount);
+      const remaining = Math.max(0, (payment.effective_remaining ?? paymentAmount) - bankAmount);
 
       results.push({
         bankTxn,
         payment,
-        customer_name: payment.customer_name,
-        confidence:    total,
-        method:        'smart_name',
-        match_type:    matchType,
+        customer_name:  payment.customer_name,
+        confidence:     total,
+        method:         phoneScore > 0 ? 'wallet_phone' : 'smart_supermarket',
+        match_type:     matchType,
+        security_level: securityLevel,
+        shortage_amount: shortageAmount,
+        date_category:  dateCategory,
+        days_diff:      Math.round(daysDiff),
+        phone_matched:  phoneScore > 0,
         breakdown: {
-          name_score:      nameScore,
+          name_score:      effectiveNameScore,
           amount_score:    amountScore,
           date_score:      dateScore,
           context_score:   contextScore,
+          date_penalty:    datePenalty,
+          phone_score:     phoneScore,
           remaining_after: remaining,
         }
       });
     }
 
-    // ترتيب تنازلي حسب الـ confidence
+    const elapsed = Date.now() - startTime;
+    if (elapsed > CONFIG.PERFORMANCE_WARN_MS) {
+      console.warn('[Layer2] Slow matching:', elapsed, 'ms');
+    }
+
     return results.sort((a, b) => b.confidence - a.confidence);
   }
 
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
+  // LAYER 3: Grouped match (one txn → N invoices)
+  // ══════════════════════════════════════════════
+  _matchLayer3(bankTxn, pendingPayments, usedPaymentIds, cleanedPayer) {
+    const availableForGrouping = pendingPayments.filter(p => !usedPaymentIds.has(p.id));
+    if (availableForGrouping.length === 0) return null;
+
+    const payerName = cleanedPayer || cleanPayerName(bankTxn.payer_name, this.accountOwner, this.accountOwnerNormalized);
+    if (payerName === '__OWNER_PAYMENT__' || payerName === '__POS_PAYMENT__') return null;
+
+    // Group payments by customer
+    const customerGroups = {};
+    for (const pay of availableForGrouping) {
+      const custId = pay.customer_id || pay.id;
+      const custName = pay.customer_name || '';
+      if (!customerGroups[custId]) customerGroups[custId] = { name: custName, payments: [] };
+      customerGroups[custId].payments.push(pay);
+    }
+
+    let bestGroupMatch = null;
+    let bestGroupConf = 0;
+
+    for (const custId of Object.keys(customerGroups)) {
+      const group = customerGroups[custId];
+      const custName = group.name;
+
+      // Get detailed name score with method info
+      let nameScore = 0;
+      let nameMethod = 'unknown';
+      try {
+        const nameResult = NameNormalizer.calculateNameScore(payerName, custName);
+        nameScore = nameResult.score;
+        nameMethod = nameResult.method || 'unknown';
+      } catch (e) {
+        nameScore = scoreName(payerName, custName, bankTxn.name_candidates_json);
+      }
+      
+      // Reject weak name methods for grouped matches (too risky for false positives)
+      const weakMethods = ['near_phonetic', 'first_token_only', 'fuzzy'];
+      if (weakMethods.includes(nameMethod) && nameScore < 70) continue;
+      if (nameScore < CONFIG.GROUPED_MIN_NAME_SCORE) continue;
+
+      if (group.payments.length >= 1) {
+        const combos = findOptimalCombinations(group.payments, bankTxn.amount, CONFIG.GROUPED_AMOUNT_TOLERANCE);
+        if (combos.length > 0) {
+          const bestCombo = combos[0];
+          const amountScore = bestCombo.diff === 0 ? 100 : Math.max(0, 100 - Math.abs(bestCombo.diff) * 15);
+          const confidence = Math.round(nameScore * 0.35 + amountScore * 0.55 + 85 * 0.10);
+
+          if (confidence >= CONFIG.GROUPED_MIN_CONFIDENCE && confidence > bestGroupConf) {
+            bestGroupConf = confidence;
+            bestGroupMatch = {
+              bankTxn:         bankTxn,
+              customer_name:   custName,
+              customer_id:     custId,
+              payments:        bestCombo.payments,
+              payment_ids:     bestCombo.payments.map(p => p.id),
+              payments_count:  bestCombo.payments.length,
+              total_amount:    bestCombo.payments.reduce((s, p) => s + (p.total_amount || p.amount || 0), 0),
+              difference:      bestCombo.diff,
+              confidence:      confidence,
+              match_type:      'grouped',
+              breakdown: {
+                name_score:   nameScore,
+                amount_score: amountScore,
+                combo_size:   bestCombo.payments.length,
+              }
+            };
+          }
+        }
+      }
+    }
+
+    return bestGroupMatch;
+  }
+
+  // ══════════════════════════════════════════════
   // AUTO CONFIRM
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
   _doAutoConfirm(matchResult) {
+    // === FINAL FIX 3: If virtual payment, create real payment record first ===
+    if (matchResult.payment && matchResult.payment._is_virtual) {
+      try {
+        const result = this.stmtCreatePaymentForInvoice.run({
+          invoice_id: matchResult.payment._invoice_id || matchResult.payment.invoice_id,
+          amount: matchResult.payment.total_amount || matchResult.payment.amount,
+          notes: 'Auto-created by matching engine (invoice #' + (matchResult.payment._invoice_id || matchResult.payment.invoice_id) + ')',
+          bank_reference: matchResult.bankTxn ? (matchResult.bankTxn.reference || '') : '',
+        });
+        const newPaymentId = result.lastInsertRowid;
+        console.log('[Matching] VIRTUAL->REAL: Created payment #' + newPaymentId + ' for invoice #' + (matchResult.payment._invoice_id || matchResult.payment.invoice_id));
+        matchResult.payment.id = newPaymentId;
+        matchResult.payment._is_virtual = false;
+      } catch (createErr) {
+        console.error('[Matching] Failed to create payment for virtual invoice:', createErr.message);
+        return; // Skip if cannot create
+      }
+    }
     const { bankTxn, payment, match_type, breakdown } = matchResult;
     const remainingAfter = breakdown.remaining_after ?? 0;
 
     const confirm = this.db.transaction(() => {
       if (match_type === 'full') {
-        // إغلاق الفاتورة كاملاً
-        this.stmtUpdatePaymentFull.run({
-          paid_amount: bankTxn.amount,
-          id:          payment.id,
-        });
-        this.stmtUpdateBankTxMatch.run({
-          match_status: 'matched_auto',
-          payment_id:   payment.id,
-          id:           bankTxn.id,
-        });
+        this.stmtUpdatePaymentFull.run({ paid_amount: bankTxn.amount, id: payment.id });
+        this.stmtUpdateBankTxMatch.run({ match_status: 'matched_auto', payment_id: payment.id, id: bankTxn.id });
 
       } else if (match_type === 'partial') {
-        // دفع جزئي — ابقِ الفاتورة مفتوحة
         this.stmtUpdatePaymentPartial.run({
           paid_amount:      bankTxn.amount,
           remaining_amount: remainingAfter,
@@ -691,127 +1801,480 @@ class MatchingEngine {
           amount:              bankTxn.amount,
           notes:               `دفعة جزئية تلقائية - ${matchResult.method}`,
         });
-        this.stmtUpdateBankTxMatch.run({
-          match_status: 'matched_auto',
-          payment_id:   payment.id,
-          id:           bankTxn.id,
-        });
+        this.stmtUpdateBankTxMatch.run({ match_status: 'matched_auto', payment_id: payment.id, id: bankTxn.id });
+
+        // Record shortage as debt if needed
+        if (remainingAfter > 0) {
+          this._recordShortageDebt(payment, bankTxn, remainingAfter);
+        }
 
       } else if (match_type === 'over') {
-        // مبلغ زائد — للمراجعة اليدوية فقط
-        this.stmtUpdateBankTxMatch.run({
-          match_status: 'review_needed',
-          payment_id:   payment.id,
-          id:           bankTxn.id,
-        });
+        this.stmtUpdateBankTxMatch.run({ match_status: 'review_needed', payment_id: payment.id, id: bankTxn.id });
       }
     });
 
     confirm();
 
-    // تحديث ذاكرة التعلم
+    // Learn from match (not for over-payments)
     if (match_type !== 'over') {
       this._learnMatch(bankTxn, payment, matchResult.method);
     }
   }
 
-  // ──────────────────────────────────────────────
-  // MANUAL CONFIRM (يُستدعى من main.js)
-  // ──────────────────────────────────────────────
-  acceptSuggestion(bankTxId, paymentIds) {
-    const pids = Array.isArray(paymentIds) ? paymentIds : [paymentIds];
-    const invoiceIds = [];
-    for (const pid of pids) {
-      const result = this.manualConfirm(bankTxId, pid);
-      if (!result.success) return result;
-      const pay = this.db.prepare('SELECT invoice_id FROM payments WHERE id=?').get(pid);
-      if (pay) invoiceIds.push(pay.invoice_id);
+  /**
+   * Create a debt record for the shortage amount.
+   */
+  _recordShortageDebt(payment, bankTxn, remainingAfter) {
+    try {
+      const customerInfo = this.db.prepare(
+        'SELECT p.invoice_id, i.customer_id, c.name FROM payments p JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customers c ON c.id = i.customer_id WHERE p.id = ?'
+      ).get(payment.id);
+
+      if (customerInfo && customerInfo.customer_id) {
+        this.db.prepare(`
+          INSERT INTO payments (invoice_id, customer_id, method, amount, status, paid_amount, remaining_amount, notes, created_at)
+              VALUES (?, ?, 'debt', ?, 'pending', 0, ?, ?, datetime('now'))
+        `).run(
+          customerInfo.invoice_id || payment.invoice_id,
+          customerInfo.customer_id,
+          remainingAfter,
+          remainingAfter,
+          "shortage_of_payment:" + payment.id + " | nqs: " + bankTxn.amount + "/" + (payment.total_amount || payment.amount) + " frq=" + remainingAfter
+        );
+      }
+    } catch (e) {
+      console.warn('[AutoConfirm] Shortage debt creation failed:', e.message);
     }
-    return { success: true, invoiceIds };
   }
 
-  rejectSuggestion(bankTxId) {
-    return { success: true };
-  }
-
+  // ══════════════════════════════════════════════
+  // MANUAL CONFIRM / ACCEPT / REJECT
+  // ══════════════════════════════════════════════
   manualConfirm(bankTxId, paymentId) {
+    // === FINAL FIX 5: Handle virtual payment IDs (negative) in manual confirm ===
+    if (paymentId < 0) {
+      console.warn('[ManualConfirm] Virtual payment ID detected:', paymentId, '- skipping (use acceptSuggestion instead)');
+    }
+
+    // === DUPLICATE PREVENTION: Check if bank transaction already matched ===
     const bankTxn = this.db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(bankTxId);
+    if (!bankTxn) return { success: false, error: 'Bank transaction not found' };
+    if (bankTxn.match_status !== 'pending') {
+      console.log('[ManualConfirm] Bank tx', bankTxId, 'already', bankTxn.match_status, '- skipping');
+      return { success: true, already_matched: true };
+    }
+
     const payment = this.db.prepare(`
       SELECT p.*, c.name AS customer_name, c.is_home_transfer
       FROM payments p LEFT JOIN customers c ON c.id = p.customer_id
       WHERE p.id = ?
     `).get(paymentId);
 
-    if (!bankTxn || !payment) return { success: false, error: 'Not found' };
+    if (!payment) return { success: false, error: 'Payment not found' };
 
-    const matchType = getMatchType(bankTxn.amount, payment.total_amount);
-    const remaining = Math.max(0, (payment.remaining_amount ?? payment.total_amount ?? 0) - bankTxn.amount);
+    // === DUPLICATE PREVENTION: Check if this invoice already has a confirmed payment with same amount ===
+    if (payment.invoice_id) {
+      const existingPayment = this.db.prepare(
+        "SELECT id FROM payments WHERE invoice_id = ? AND amount = ? AND status = 'confirmed' AND id != ?"
+      ).get(payment.invoice_id, payment.total_amount || payment.amount, paymentId);
+      if (existingPayment) {
+        console.log('[ManualConfirm] Invoice', payment.invoice_id, 'already has confirmed payment', existingPayment.id, '- skipping duplicate');
+        // Still mark bank transaction as matched
+        this.stmtUpdateBankTxMatch.run({ match_status: 'matched_manual', payment_id: existingPayment.id, id: bankTxn.id });
+        return { success: true, already_paid: true };
+      }
+    }
+
+    const payAmount = payment.total_amount || payment.amount || 0;
+    const matchType = getMatchType(bankTxn.amount, payAmount);
+    const remaining = Math.max(0, payAmount - bankTxn.amount);
 
     const fakeMatch = {
       bankTxn,
       payment,
-      match_type:  matchType,
-      method:      'manual',
-      confidence:  100,
-      breakdown:   { remaining_after: remaining }
+      match_type: matchType,
+      method:     'manual',
+      confidence: 100,
+      breakdown:  { remaining_after: remaining }
     };
 
     this._doAutoConfirm(fakeMatch);
     this._learnMatch(bankTxn, payment, 'manual');
 
+    // === Record in matching_attempts ===
+    try {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO matching_attempts (bank_transaction_id, payment_id, score, decision, created_at)
+        VALUES (?, ?, 100, 'accepted', datetime('now'))
+      `).run(bankTxId, paymentId);
+    } catch(e) { console.log('[ManualConfirm] matching_attempts insert:', e.message); }
+
     return { success: true };
   }
 
-  // ──────────────────────────────────────────────
+  acceptSuggestion(bankTxId, paymentIds) {
+    // === FINAL FIX 5b: Convert virtual payment IDs before acceptance ===
+    // Virtual payments have negative IDs - they need real payment creation first
+    // This is handled in _doAutoConfirm, but for manual acceptance we handle here too
+    const pids = Array.isArray(paymentIds) ? paymentIds : [paymentIds];
+    const invoiceIds = [];
+
+    const bankTxn = this.db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(bankTxId);
+    if (!bankTxn) return { success: false, error: 'Bank transaction not found' };
+
+    // === DUPLICATE PREVENTION: Skip if already matched ===
+    if (bankTxn.match_status !== 'pending') {
+      console.log('[AcceptSuggestion] Bank tx', bankTxId, 'already', bankTxn.match_status, '- skipping');
+      return { success: true, already_matched: true };
+    }
+
+    if (pids.length === 1) {
+      // === FIFO DISTRIBUTION: Distribute transfer across ALL customer invoices ===
+      const mainPid = pids[0];
+      const mainPayment = this.db.prepare(
+        'SELECT p.*, c.name AS customer_name, c.id AS cust_id, i.customer_id FROM payments p LEFT JOIN invoices i ON i.id = p.invoice_id LEFT JOIN customers c ON c.id = i.customer_id WHERE p.id = ?'
+      ).get(mainPid);
+
+      if (!mainPayment) return { success: false, error: 'Payment not found' };
+
+      // Get ALL pending invoices for this customer (sorted FIFO - oldest first)
+      const custName = (mainPayment.customer_name || '').trim();
+      let allCustomerPayments = [];
+
+      if (custName && this._pendingPaymentsCache) {
+        allCustomerPayments = this._pendingPaymentsCache.filter(p =>
+          (p.customer_name || '').trim() === custName &&
+          (p.total_amount || p.amount || 0) > 0
+        );
+        // Deduplicate by invoice_id
+        const seen = new Set();
+        allCustomerPayments = allCustomerPayments.filter(p => {
+          const key = (p.invoice_id || p.id) + '_' + (p.total_amount || p.amount);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        // Sort FIFO (oldest first by id - lower id = older)
+        allCustomerPayments.sort((a, b) => (a.id || 0) - (b.id || 0));
+      }
+
+      // If only one invoice or no cache, fall back to single invoice handling
+      if (allCustomerPayments.length <= 1) {
+        const result = this.manualConfirm(bankTxId, mainPid);
+        if (!result.success) return result;
+        const pay = this.db.prepare('SELECT invoice_id FROM payments WHERE id=?').get(mainPid);
+        if (pay) invoiceIds.push(pay.invoice_id);
+      } else {
+        // === FIFO DISTRIBUTION across multiple invoices ===
+        let remainingTransfer = bankTxn.amount;
+        const totalInvoices = allCustomerPayments.reduce((s, p) => s + (p.total_amount || p.amount || 0), 0);
+
+        console.log('[FIFO] Customer:', custName, '| Transfer:', bankTxn.amount, '| Invoices:', allCustomerPayments.length, '| Total:', totalInvoices);
+
+        const distribute = this.db.transaction(() => {
+          for (const inv of allCustomerPayments) {
+            const payId = inv.id;
+            const invId = inv.invoice_id || inv._invoice_id;
+            const invAmount = inv.total_amount || inv.amount || 0;
+
+            if (invId) invoiceIds.push(invId);
+
+            if (remainingTransfer <= 0) {
+              console.log('[FIFO] Invoice #' + invId + ' (' + invAmount + '\u20AA) - no funds remaining, stays pending');
+              continue;
+            }
+
+            if (remainingTransfer >= invAmount) {
+              // Full payment for this invoice
+              this.stmtUpdatePaymentFull.run({ paid_amount: invAmount, id: payId });
+              remainingTransfer -= invAmount;
+              console.log('[FIFO] Invoice #' + invId + ' (' + invAmount + '\u20AA) - PAID IN FULL. Remaining: ' + remainingTransfer + '\u20AA');
+
+              try {
+                this.stmtInsertInstallment.run({
+                  payment_id: payId,
+                  bank_transaction_id: bankTxn.id,
+                  amount: invAmount,
+                  notes: '\u062F\u0641\u0639\u0629 \u0643\u0627\u0645\u0644\u0629 - \u062A\u0648\u0632\u064A\u0639 FIFO',
+                });
+              } catch(e) { console.warn('[FIFO] Installment error:', e.message); }
+
+            } else {
+              // Partial payment
+              const paidAmount = remainingTransfer;
+              const shortage = invAmount - remainingTransfer;
+
+              this.stmtUpdatePaymentPartial.run({
+                paid_amount: paidAmount,
+                remaining_amount: shortage,
+                id: payId,
+              });
+
+              console.log('[FIFO] Invoice #' + invId + ' (' + invAmount + '\u20AA) - PARTIAL: paid ' + paidAmount + '\u20AA, shortage ' + shortage + '\u20AA');
+
+              try {
+                this.stmtInsertInstallment.run({
+                  payment_id: payId,
+                  bank_transaction_id: bankTxn.id,
+                  amount: paidAmount,
+                  notes: '\u062F\u0641\u0639\u0629 \u062C\u0632\u0626\u064A\u0629 - \u062A\u0648\u0632\u064A\u0639 FIFO',
+                });
+              } catch(e) { console.warn('[FIFO] Installment error:', e.message); }
+
+              // Record debt for shortage
+              this._recordShortageDebt(inv, bankTxn, shortage);
+
+              remainingTransfer = 0;
+            }
+          }
+
+          // Mark bank transaction as matched
+          this.stmtUpdateBankTxMatch.run({ match_status: 'matched_auto', payment_id: allCustomerPayments[0].id, id: bankTxn.id });
+
+          // If transfer exceeds all invoices - record credit
+          if (remainingTransfer > 0) {
+            console.log('[FIFO] Credit remaining: ' + remainingTransfer + '\u20AA for ' + custName);
+            try {
+              const custId = mainPayment.customer_id || mainPayment.cust_id;
+              const firstInvId = allCustomerPayments[0].invoice_id || allCustomerPayments[0]._invoice_id;
+              this.db.prepare(
+                "INSERT INTO payments (invoice_id, customer_id, method, amount, status, notes, created_at) VALUES (?, ?, 'credit', ?, 'confirmed', ?, datetime('now'))"
+              ).run(
+                firstInvId,
+                custId,
+                remainingTransfer,
+                '\u0631\u0635\u064A\u062F \u062F\u0627\u0626\u0646: \u062A\u062D\u0648\u064A\u0644 ' + bankTxn.amount + '\u20AA \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0641\u0648\u0627\u062A\u064A\u0631 ' + totalInvoices + '\u20AA'
+              );
+            } catch(e) { console.warn('[FIFO] Credit error:', e.message); }
+          }
+        });
+
+        distribute();
+
+        // Learn from match
+        this._learnMatch(bankTxn, mainPayment, 'fifo_distribution');
+
+        // Record in matching_attempts
+        try {
+          this.db.prepare(
+            "INSERT OR IGNORE INTO matching_attempts (bank_transaction_id, payment_id, score, decision, created_at) VALUES (?, ?, 100, 'accepted', datetime('now'))"
+          ).run(bankTxId, mainPid);
+        } catch(e) { console.log('[FIFO] matching_attempts:', e.message); }
+
+        console.log('[FIFO] Distribution complete for', custName);
+      }
+
+    } else {
+      // Grouped match: multiple payments for one bank transaction
+      const confirmGrouped = this.db.transaction(() => {
+        let totalPayments = 0;
+        for (const pid of pids) {
+          const payment = this.db.prepare(
+            'SELECT p.*, c.name AS customer_name FROM payments p LEFT JOIN customers c ON c.id = p.customer_id WHERE p.id = ?'
+          ).get(pid);
+          if (!payment) throw new Error('Payment ' + pid + ' not found');
+
+          const payAmount = payment.total_amount || payment.amount || 0;
+          totalPayments += payAmount;
+
+          this.stmtUpdatePaymentFull.run({ paid_amount: payAmount, id: payment.id });
+
+          const pay = this.db.prepare('SELECT invoice_id FROM payments WHERE id=?').get(pid);
+          if (pay) invoiceIds.push(pay.invoice_id);
+        }
+
+        this.stmtUpdateBankTxMatch.run({ match_status: 'matched_auto', payment_id: pids[0], id: bankTxn.id });
+      });
+
+      confirmGrouped();
+
+      // Learn from the first payment
+      const firstPayment = this.db.prepare(
+        'SELECT p.*, c.name AS customer_name FROM payments p LEFT JOIN customers c ON c.id = p.customer_id WHERE p.id = ?'
+      ).get(pids[0]);
+      if (firstPayment) {
+        this._learnMatch(bankTxn, firstPayment, 'manual_grouped');
+      }
+    }
+
+    return { success: true, invoiceIds };
+  }
+
+  rejectSuggestion(bankTxId) {
+    // Negative feedback if feedback service available
+    if (this.feedbackService) {
+      try {
+        const bankTxn = this.db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(bankTxId);
+        if (bankTxn) {
+          this.feedbackService.recordRejection(bankTxn.payer_name || '', bankTxId);
+        }
+      } catch (_) { /* non-critical */ }
+    }
+
+    // === FIX: Actually mark as rejected so it does not reappear ===
+    try {
+      this.db.prepare("UPDATE bank_transactions SET match_status = 'rejected' WHERE id = ? AND match_status = 'pending'").run(bankTxId);
+      console.log('[RejectSuggestion] Marked bank tx', bankTxId, 'as rejected');
+    } catch(e) { console.log('[RejectSuggestion] Update error:', e.message); }
+
+    // Record in matching_attempts
+    try {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO matching_attempts (bank_transaction_id, payment_id, score, decision, created_at)
+        VALUES (?, NULL, 0, 'rejected', datetime('now'))
+      `).run(bankTxId);
+    } catch(e) { /* non-critical */ }
+
+    return { success: true };
+  }
+
+  // ══════════════════════════════════════════════
+  // UNDO MATCH
+  // ══════════════════════════════════════════════
+  undoMatch(bankTransactionId, reason) {
+    reason = reason || 'manual_undo';
+
+    const doUndo = this.db.transaction(() => {
+      const bankTxn = this.db.prepare('SELECT * FROM bank_transactions WHERE id = ?').get(bankTransactionId);
+      if (!bankTxn) throw new Error('العملية البنكية غير موجودة');
+      if (bankTxn.match_status === 'pending') throw new Error('العملية غير مطابقة أصلا');
+
+      // Check for grouped match
+      const grouped = this.db.prepare(
+        'SELECT * FROM grouped_matches WHERE bank_transaction_id = ? AND reversed_at IS NULL'
+      ).get(bankTransactionId);
+
+      let affectedPayments = [];
+
+      if (grouped) {
+        const paymentIds = grouped.payment_ids.split(',').map(id => parseInt(id));
+        affectedPayments = paymentIds;
+        for (const pid of paymentIds) {
+          this.db.prepare("UPDATE payments SET status = 'awaiting_transfer' WHERE id = ?").run(pid);
+        }
+        this.db.prepare("UPDATE grouped_matches SET reversed_at = datetime('now','localtime') WHERE id = ?").run(grouped.id);
+      } else {
+        const paymentId = bankTxn.matched_payment_id;
+        if (paymentId) {
+          affectedPayments = [paymentId];
+          this.db.prepare("UPDATE payments SET status = 'awaiting_transfer' WHERE id = ?").run(paymentId);
+        }
+      }
+
+      // Clean up side effects
+      this.db.prepare('DELETE FROM installments WHERE bank_transaction_id = ?').run(bankTransactionId);
+      this.db.prepare('DELETE FROM debts WHERE related_bank_transaction_id = ? AND is_shortage = 1').run(bankTransactionId);
+      this.db.prepare('DELETE FROM customer_credits WHERE related_bank_transaction_id = ?').run(bankTransactionId);
+
+      // Reset bank transaction
+      this.db.prepare("UPDATE bank_transactions SET match_status = 'pending', matched_payment_id = NULL WHERE id = ?").run(bankTransactionId);
+
+      return { affected: affectedPayments.length, type: grouped ? 'grouped' : 'single' };
+    });
+
+    try {
+      const result = doUndo();
+      return { success: true, ...result };
+    } catch (e) {
+      console.error('[undoMatch] Error:', e.message);
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ══════════════════════════════════════════════
   // LEARN MATCH
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
   _learnMatch(bankTxn, payment, method) {
     const pattern = (bankTxn.payer_name_normalized || bankTxn.payer_name || '').trim();
     if (!pattern || pattern.length < 3) return;
 
     try {
-      // Get actual columns to build safe INSERT
-      const cols = this.db.prepare("PRAGMA table_info(name_learning)").all();
+      // 1. Basic learning (name_learning table)
+      const cols = this.db.prepare('PRAGMA table_info(name_learning)').all();
       const colNames = cols.map(c => c.name);
-      
+
       const values = {
-        payer_name_pattern: pattern,
-        customer_id: payment.customer_id || null,
-        customer_name: payment.customer_name || '',
-        bank_name_raw: bankTxn.payer_name || bankTxn.parsed_name || '',
+        payer_name_pattern:   pattern,
+        customer_id:          payment.customer_id || null,
+        customer_name:        payment.customer_name || '',
+        bank_name_raw:        bankTxn.payer_name || bankTxn.parsed_name || '',
         bank_name_normalized: (bankTxn.payer_name_normalized || bankTxn.payer_name || '').toLowerCase().trim(),
-        system_customer_id: payment.customer_id || null,
-        confidence: method === 'manual' ? 100 : 95,
-        use_count: 1,
-        confirmed_by: method,
-        last_used_at: new Date().toISOString(),
-        created_at: new Date().toISOString(),
+        system_customer_id:   payment.customer_id || null,
+        confidence:           method === 'manual' ? 100 : 95,
+        use_count:            1,
+        confirmed_by:         method,
+        last_used_at:         new Date().toISOString(),
+        created_at:           new Date().toISOString(),
       };
 
-      // Fill any NOT NULL column with safe default
       for (const col of cols) {
         if (col.notnull && !col.dflt_value && col.name !== 'id' && !(col.name in values)) {
           values[col.name] = '';
         }
       }
 
-      const insertCols = Object.keys(values).filter(k => colNames.includes(k));
-      const placeholders = insertCols.map(c => '@' + c).join(', ');
-      const sql = `INSERT OR REPLACE INTO name_learning (${insertCols.join(', ')}) VALUES (${placeholders})`;
-      
-      this.db.prepare(sql).run(values);
-    } catch(e) {
-      console.log('[LearnMatch] Error:', e.message);
+      const usedCols = colNames.filter(c => c !== 'id' && c in values);
+      const placeholders = usedCols.map(() => '?').join(', ');
+      const sql = 'INSERT OR REPLACE INTO name_learning (' + usedCols.join(', ') + ') VALUES (' + placeholders + ')';
+      this.db.prepare(sql).run(...usedCols.map(c => values[c]));
+
+      // 2. Advanced feedback service
+      if (this.feedbackService) {
+        try {
+          if (method === 'manual' || method === 'manual_grouped') {
+            this.feedbackService.recordManualConfirmation(
+              bankTxn.id, payment.id,
+              bankTxn.payer_name || '', payment.customer_name || '',
+              bankTxn.amount || 0, payment.amount || 0,
+              'system', 'auto-learn',
+              true, payment.customer_id
+            );
+          } else {
+            this.feedbackService.recordAutoConfirmation(
+              bankTxn, payment,
+              method === 'auto' ? 95 : 90,
+              { method: method }
+            );
+          }
+        } catch (fbErr) {
+          console.warn('[LearnMatch] Feedback recording failed:', fbErr.message);
+        }
+      }
+
+      // 3. Save to customer_aliases for future matching
+      const bankName = (bankTxn.payer_name || '').trim();
+      const custName = (payment.customer_name || '').trim();
+      const custId = payment.customer_id;
+      if (custId && bankName.length >= 3 && bankName !== custName) {
+        try {
+          const existing = this.db.prepare(
+            'SELECT id FROM customer_aliases WHERE customer_id = ? AND alias_name = ?'
+          ).get(custId, bankName);
+          if (!existing) {
+            this.db.prepare(
+              "INSERT INTO customer_aliases (customer_id, alias_name, normalized_name, source, confidence, usage_count, created_at) VALUES (?, ?, ?, ?, 'confirmed', 1, datetime('now','localtime'))"
+            ).run(custId, bankName, bankName.toLowerCase().trim(), 'auto_learn_' + method);
+            console.log('[LearnMatch] Saved alias:', bankName, '? customer', custId, '(' + custName + ')');
+          } else {
+            this.db.prepare(
+              'UPDATE customer_aliases SET usage_count = usage_count + 1 WHERE id = ?'
+            ).run(existing.id);
+          }
+        } catch (aliasErr) {
+          console.warn('[LearnMatch] Alias save failed:', aliasErr.message);
+        }
+      }
+
+    } catch (err) {
+      console.error('[LearnMatch] Error (non-critical):', err.message);
     }
   }
 
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
   // IGNORE BANK TX
-  // ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════
   ignoreBankTx(bankTxId) {
-    this.db.prepare(
-      'UPDATE bank_transactions SET match_status = ? WHERE id = ?'
-    ).run('ignored', bankTxId);
+    this.db.prepare('UPDATE bank_transactions SET match_status = ? WHERE id = ?').run('ignored', bankTxId);
     return { success: true };
   }
 }

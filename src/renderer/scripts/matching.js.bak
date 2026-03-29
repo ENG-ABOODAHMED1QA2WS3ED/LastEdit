@@ -1,0 +1,879 @@
+﻿// matching.js - Smart Matching UI v6.2
+console.log('matching.js loaded v6.2');
+
+let currentResults = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  const fileInput = document.getElementById('fileInput');
+  const uploadBtn = document.querySelector('[data-action="uploadFile"]');
+  const statsBtn = document.querySelector('[data-action="showStats"]');
+
+  if (uploadBtn) uploadBtn.addEventListener('click', () => fileInput && fileInput.click());
+  if (fileInput) fileInput.addEventListener('change', handleFileUpload);
+  if (statsBtn) statsBtn.addEventListener('click', loadStats);
+
+  console.log('أزرار:', {uploadBtn: !!uploadBtn, fileInput: !!fileInput, statsBtn: !!statsBtn});
+
+  // تسجيل الخروج
+  document.getElementById('btnLogout')?.addEventListener('click', async () => {
+    try { await window.api.logout(); } catch(e) {}
+    window.location.href = '../pages/login.html';
+  });
+
+  // تحميل الاقتراحات المعلقة تلقائياً عند فتح الصفحة
+  // الصفحة جاهزة - لا نعرض شيء حتى يرفع المستخدم كشف
+
+  // === زر مسح الكشوفات البنكية القديمة ===
+  const btnClearOldBank = document.getElementById('btnClearOldBank');
+  if (btnClearOldBank) {
+    btnClearOldBank.addEventListener('click', async () => {
+      const confirmed = confirm('هل أنت متأكد من مسح جميع الكشوفات البنكية');
+      if (!confirmed) return;
+      try {
+        btnClearOldBank.disabled = true;
+        btnClearOldBank.textContent = 'جاري المسح...';
+        const result = await window.api.clearOldBankData();
+        if (result && result.success) {
+          showToast('تم مسح جميع الكشوفات البنكية بنجاح', 'success');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showToast('فشل المسح: ' + (result?.error || ''), 'error');
+        }
+      } catch (err) {
+        showToast('خطأ: ' + err.message, 'error');
+      } finally {
+        btnClearOldBank.disabled = false;
+        btnClearOldBank.textContent = 'مسح الكشوفات';
+      }
+    });
+    console.log('btnClearOldBank listener added');
+  }
+});
+
+async function loadPendingMatches() {
+  // لا شيء - الصفحة تنتظر رفع كشف
+  return;
+  return;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async function handleFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  showLoading('جاري تحليل الكشف البنكي...');
+
+  try {
+    const text = await file.text();
+    const allLines = text.split('\n').map(l => l.trim()).filter(l => l);
+
+    console.log('=== تحليل الملف ===');
+    console.log('اجمالي الأسطر:', allLines.length);
+
+    // البحث عن صف الهيدر الحقيقي - يدعم هيكل Excel الأصلي وكشف بنك فلسطين PDF
+    let headerIndex = -1;
+    let bankFormat = "standard"; // standard or bop (Bank of Palestine)
+    for (let i = 0; i < allLines.length; i++) {
+      const line = allLines[i];
+      // هيكل Excel الأصلي
+      if (line.includes("التاريخ البنكي") && line.includes("الإيضاحات")) {
+        headerIndex = i; bankFormat = "standard";
+        console.log("هيدر Excel موجود بالصف:", i); break;
+      }
+      if (line.includes("تاريخ") && (line.includes("ايضاح") || line.includes("إيضاح")) && line.includes("مبالغ")) {
+        headerIndex = i; bankFormat = "standard";
+        console.log("هيدر مرن بالصف:", i); break;
+      }
+      // هيكل بنك فلسطين PDF->CSV
+      if (line.includes("التاريخ البنكي") && line.includes("التفاصيل")) {
+        headerIndex = i; bankFormat = "bop";
+        console.log("هيدر بنك فلسطين بالصف:", i); break;
+      }
+      // هيكل بنك فلسطين بأحرف عربية مختلفة
+      if ((line.includes("اﻟﺘﺎرﯾﺦ") || line.includes("ﺗﺎرﯾﺦ")) && (line.includes("اﻟﺘﻔﺎﺻﯿﻞ") || line.includes("ﺗﻔﺎﺻﯿﻞ"))) {
+        headerIndex = i; bankFormat = "bop";
+        console.log("هيدر بنك فلسطين (unicode) بالصف:", i); break;
+      }
+      // أي سطر فيه تاريخ ومبالغ
+      if (line.includes("تاريخ") && (line.includes("مبالغ") || line.includes("المبالغ")) && (line.includes("مدفوع") || line.includes("مستلم"))) {
+        headerIndex = i; bankFormat = "standard";
+        console.log("هيدر عام بالصف:", i); break;
+      }
+    }
+
+    // لو ما لقينا هيدر، نحاول نحلل كبنك فلسطين بدون هيدر
+    if (headerIndex === -1) {
+      // نبحث عن أول سطر فيه "تحويل الكتروني" أو "ﺗﺤﻮﯾﻞ"
+      for (let i = 0; i < allLines.length; i++) {
+        if (allLines[i].includes("تحويل الكتروني") || allLines[i].includes("ﺗﺤﻮﯾﻞ اﻟﻜﺘﺮوﻧﻲ") || allLines[i].includes("Transfer")) {
+          headerIndex = i - 1; bankFormat = "bop_noheader";
+          console.log("بنك فلسطين بدون هيدر، البيانات تبدأ من:", i); break;
+        }
+      }
+    }
+
+    if (headerIndex === -1) {
+      hideLoading();
+      showToast("لم يتم العثور على هيدر الكشف البنكي", "error");
+      return;
+    }
+
+    console.log("صيغة الكشف:", bankFormat);
+
+    // === تحليل حسب الصيغة ===
+    let rows = [];
+    let incoming = 0, outgoing = 0, skipped = 0;
+    let parsedEntries = [];
+    let headers = [];
+
+    if (bankFormat === "bop" || bankFormat === "bop_noheader") {
+      // === بنك فلسطين: البيانات موزعة على عدة أسطر ===
+      headers = ["التاريخ", "الاسم", "المبلغ", "النوع"];
+      const dataLines = bankFormat === "bop_noheader" ? allLines.slice(headerIndex + 1) : allLines.slice(headerIndex + 1);
+
+      let currentName = "";
+      let currentType = "";
+
+      for (let i = 0; i < dataLines.length; i++) {
+        const line = dataLines[i];
+
+        // تخطي أسطر الهيدر المتكررة
+        if (line.includes("اﻟﺘﺎرﯾﺦ اﻟﺒﻨﻜﻲ") || line.includes("التاريخ البنكي")) continue;
+        // تخطي أسطر العمولة
+        if (line.includes("ﻋﻤﻮﻟﺔ") || line.includes("عمولة")) continue;
+
+        // سطر وصف العملية - يحتوي اسم المحوّل
+        const nameMatch = line.match(/(?:ﻣﻦ|من)\s+(.+?)\s*,|(?:from)\s+(.+?)\s*,/i);
+        if (nameMatch) {
+          currentName = (nameMatch[1] || nameMatch[2] || "").trim();
+          // نوع العملية
+          if (line.includes("ﻟﺼﺪﯾﻖ") || line.includes("لصديق") || line.includes("Pay To Friend")) currentType = "دفع لصديق";
+          else if (line.includes("ﻟﺘﺎﺟﺮ") || line.includes("لتاجر")) currentType = "دفع لتاجر";
+          else if (line.includes("ﻟﻼﺧﺮﯾﻦ") || line.includes("للاخرين") || line.includes("Transfer to Others")) currentType = "تحويل للاخرين";
+          else currentType = "تحويل";
+          continue;
+        }
+
+        // سطر المبلغ - يحتوي أرقام وتاريخ
+        const amountMatch = line.match(/([\d,]+\.\d{2}).*?(\d{2}\/\d{2}\/\d{4})/);
+        if (amountMatch && currentName) {
+          const cols = line.split(",").map(c => c.replace(/"/g, "").trim());
+          // استخراج المبلغ: العمود الثاني هو المبلغ (ليس الرصيد)
+          let amount = 0;
+          let dateStr = "";
+          
+          // cols[0] = الرصيد (61,313.39) - نتجاهله
+          // cols[1] = المبلغ (98.00) - هذا اللي نريده
+          // cols[2+] = التواريخ
+          if (cols.length >= 2) {
+            const amtStr = cols[1] ? cols[1].replace(/,/g, "") : "";
+            const parsed = parseFloat(amtStr);
+            if (!isNaN(parsed) && parsed > 0) {
+              amount = parsed;
+            }
+          }
+          
+          // استخراج التاريخ من أي عمود
+          for (const col of cols) {
+            const dm = col.match(/(\d{2}\/\d{2}\/\d{4})/);
+            if (dm) { dateStr = dm[1]; break; }
+          }
+
+          if (amount > 0) {
+            // تخطي المبالغ السالبة (مدفوعات صادرة)
+            const rawLine = line;
+            const isNegative = rawLine.includes("-") && rawLine.indexOf("-") < rawLine.indexOf(amount.toString().replace(".", "").substring(0,3));
+            if (!isNegative) {
+              parsedEntries.push({ date: dateStr, description: currentName, amount: amount, type: currentType, rawRow: cols });
+              incoming++;
+            } else {
+              outgoing++;
+            }
+          }
+          currentName = "";
+          currentType = "";
+          continue;
+        }
+
+        // سطر التفاصيل الإضافية (WALLET...) - نتخطاه
+      }
+
+    } else {
+      // === الهيكل القياسي (Excel) ===
+      headers = parseCSVLine(allLines[headerIndex]);
+      console.log("Headers:", headers);
+
+      let colDate = -1, colDesc = -1, colPaid = -1, colReceived = -1, colBalance = -1;
+      for (let i = 0; i < headers.length; i++) {
+        const h = headers[i].trim();
+        if (h.includes("التاريخ البنكي") || (h.includes("تاريخ") && h.includes("بنك"))) colDate = i;
+        if (h.includes("الإيضاحات") || h.includes("ايضاح") || h.includes("إيضاح") || h.includes("وصف")) colDesc = i;
+        if (h.includes("مدفوعة") || h.includes("مدين")) colPaid = i;
+        if (h.includes("مستلمة") || h.includes("دائن") || h.includes("وارد")) colReceived = i;
+        if (h.includes("رصيد") || h.includes("الرصيد")) colBalance = i;
+      }
+
+      console.log("أعمدة:", { colDate, colDesc, colPaid, colReceived, colBalance });
+
+    if (colDesc === -1 || colReceived === -1) {
+      hideLoading();
+      showToast('لم يتم تحديد أعمدة الوصف أو المبالغ المستلمة', 'error');
+      return;
+    }
+
+    // === استخراج الاسم من وصف التحويل ===
+    function extractPayerName(desc) {
+      if (!desc) return '';
+      let name = '';
+      
+      // "تحويل للاخرين من احمد نصار... الى عبدالرحمن..."  نأخذ المرسل فقط
+      let match = desc.match(/(?:للاخرين من|للاخرین من)\s+(.+?)\s+(?:الى|إلى|ال[یي])\s/i);
+      // نفس النمط بدون "الى" (تحويل بدون مستلم مسمى)
+      if (!match) match = desc.match(/(?:للاخرين من|للاخرین من)\s+(.+?)(?:\s*\/|$)/i);
+      if (match) { name = match[1].trim(); }
+      
+      // "الدفع لصديق من Ahmed Ali Mohammed /123..."  نأخذ الاسم
+      if (!name) {
+        match = desc.match(/(?:لصديق من|لصدیق من)\s+(.+?)(?:\s*\/|$)/i);
+        if (match) name = match[1].trim();
+      }
+      
+      // "الدفع لصديق الى عبد الله /123..."  صادر
+      if (!name) {
+        match = desc.match(/(?:لصديق (?:الى|إلى|ال[یي]))\s+(.+?)(?:\s*\/|$)/i);
+        if (match) name = match[1].trim();
+      }
+      
+      // "pacs008-123/FIRST/LAST/..."  اسم من SWIFT
+      if (!name) {
+        match = desc.match(/pacs\d+-[^\/]*\/(.+?)\/CT/i);
+        if (match) {
+          name = match[1].replace(/\//g, ' ').replace(/[^a-zA-Z\u0600-\u06FF\s]/g, '').trim();
+        } else {
+          match = desc.match(/pacs\d+-[^\/]*\/([^\/]+)\/([^\/]+)\//);
+        if (match) name = (match[1] + ' ' + match[2]).replace(/[^a-zA-Z\u0600-\u06FF\s]/g, '').trim();
+        }
+      }
+      
+      // fallback
+      if (!name) name = desc.substring(0, 80);
+      
+      // تنظيف: شيل "- WALLET" و أرقام وأحرف زيادة
+      name = name.replace(/\s*-\s*WALLET/gi, '');
+      name = name.replace(/\s*\/\d+.*$/, '');
+      name = name.replace(/\s+/g, ' ').trim();
+      
+      return name;
+    }
+    // تحليل البيانات
+      const dataLines = allLines.slice(headerIndex + 1);
+
+      for (const line of dataLines) {
+        if (!line || line.startsWith(",,,")) continue;
+        const cols = parseCSVLine(line);
+        if (cols.length < 3) { skipped++; continue; }
+
+        const desc = (cols[colDesc] || "").trim();
+        const receivedStr = (cols[colReceived] || "").replace(/,/g, "").trim();
+        const paidStr = colPaid >= 0 ? (cols[colPaid] || "").replace(/,/g, "").trim() : "";
+        const dateStr = colDate >= 0 ? (cols[colDate] || "").trim() : "";
+        const received = parseFloat(receivedStr);
+        const paid = parseFloat(paidStr);
+
+        if (received > 0) {
+          incoming++;
+          parsedEntries.push({ date: dateStr, description: desc, payer_name: extractPayerName(desc), amount: received, rawRow: cols });
+        } else if (paid && (paid < 0 || paidStr.startsWith("-"))) {
+          outgoing++;
+        } else {
+          skipped++;
+        }
+      }
+    } // end standard format
+
+    // عرض ملخص الاستيراد
+    showImportSummary(parsedEntries.length + skipped, incoming, outgoing, skipped);
+
+    console.log("عمليات واردة محللة:", parsedEntries.length);
+    parsedEntries.forEach(e => console.log("  ", (e.description || "").substring(0,60), "|", e.amount));
+
+
+    showLoading("جاري استيراد الكشف...");
+    // await window.api.clearOldBankData(); // DISABLED: hash dedup handles duplicates
+    // === اكتشاف: هل هو كشف بنك فلسطين؟ إذا نعم  أرسل النص الخام للـ Parser المخصص ===
+    let importResult;
+    if (bankFormat === "bop" || bankFormat === "bop_noheader") {
+      console.log("[Import] كشف بنك فلسطين  إرسال النص الخام للـ Parser المخصص");
+      importResult = await window.api.importBankStatement(text, [], file.name);
+    } else {
+      console.log("[Import] كشف عادي  إرسال parsedEntries");
+      importResult = await window.api.importBankStatement(parsedEntries, headers.map(h => h.trim()), file.name);
+    }
+    console.log("نتيجة الاستيراد:", importResult);
+
+    if (!importResult.success) {
+      hideLoading();
+      showToast('خطأ في الاستيراد: ' + (importResult.error || ''), 'error');
+      return;
+    }
+
+    // تشغيل المطابقة
+    // تشغيل المطابقة على كل العمليات الجديدة
+    const matchResult = await window.api.runMatching();
+    console.log("نتيجة المطابقة:", matchResult);
+
+    // دمج كل البيانات المعلقة (اقتراحات + عمليات بنكية غير مطابقة)
+    try {
+      // دمج الاقتراحات المعلقة
+      const pending = await window.api.getPendingMatches();
+      if (pending && pending.success && pending.suggested && pending.suggested.length > 0) {
+        if (!matchResult.suggested) matchResult.suggested = [];
+        const currentBankIds = new Set(matchResult.suggested.map(s => (s.bank_transaction_id || s.bankTxn?.id || s.bank_transaction?.id)));
+        for (const s of pending.suggested) {
+          if (!currentBankIds.has((s.bank_transaction_id || s.bankTxn?.id || s.bank_transaction?.id))) matchResult.suggested.push(s);
+        }
+      }
+
+
+      // دمج العمليات البنكية غير المطابقة (قراءة فقط)
+      const allUnmatched = await window.api.getUnmatchedBankTransactions();
+      if (allUnmatched && allUnmatched.length > 0) {
+        if (!matchResult.unmatched_bank) matchResult.unmatched_bank = [];
+        const currentIds = new Set(matchResult.unmatched_bank.map(b => b.id));
+        for (const b of allUnmatched) {
+          if (!currentIds.has(b.id)) matchResult.unmatched_bank.push(b);
+        }
+      }
+
+      // FIX Problem 6: Remove bank txns that already appear in suggestions
+      const suggestedIds = new Set([
+        ...(matchResult.suggested || []).map(s => s.bank_transaction_id),
+        ...(matchResult.suggested || []).map(s => s.bank_transaction && (s.bank_transaction_id || s.bankTxn?.id || s.bank_transaction?.id)),
+        ...(matchResult.auto_confirmed || []).map(a => a.bank_transaction_id),
+        ...(matchResult.auto_confirmed || []).map(a => a.bank_transaction && a.bank_transaction.id)
+      ].filter(Boolean));
+
+      if (suggestedIds.size > 0 && matchResult.unmatched_bank) {
+        const beforeCount = matchResult.unmatched_bank.length;
+        matchResult.unmatched_bank = matchResult.unmatched_bank.filter(b => !suggestedIds.has(b.id));
+        const removed = beforeCount - matchResult.unmatched_bank.length;
+        if (removed > 0) console.log("[Matching] Filtered " + removed + " duplicate(s) from unmatched_bank");
+      }
+
+      // Validate: no duplicate bank IDs across sections
+      const allBankIds = [
+        ...(matchResult.suggested || []).map(s => s.bank_transaction_id),
+        ...(matchResult.unmatched_bank || []).map(b => b.id)
+      ];
+      const uniqueCheck = new Set(allBankIds);
+      if (allBankIds.length !== uniqueCheck.size) {
+        console.error("[Matching] DUPLICATE bank IDs detected!");
+      } else {
+        console.log("[Matching] No duplicate bank IDs - OK");
+      }
+
+      // تحديث summary
+      if (!matchResult.summary) matchResult.summary = {};
+      matchResult.summary.suggested = (matchResult.suggested || []).length;
+      matchResult.summary.unmatched_bank = (matchResult.unmatched_bank || []).length;
+      matchResult.summary.unmatched_payments = (matchResult.unmatched_payments || []).length;
+    } catch(e) { console.error("خطأ دمج البيانات:", e); }
+
+    currentResults = matchResult;
+    renderResults(matchResult);
+    hideLoading();
+
+
+  } catch (err) {
+    console.error('خطأ:', err);
+    hideLoading();
+    showToast('خطأ: ' + err.message, 'error');
+  }
+
+  // اعادة تعيين المدخل
+  e.target.value = null; e.target.type = ''; e.target.type = 'file';
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { result.push(current); current = ''; }
+    else { current += ch; }
+  }
+  result.push(current);
+  return result;
+}
+
+function showImportSummary(total, incoming, outgoing, skipped) {
+  const container = document.getElementById('importResults');
+  if (!container) return;
+  container.style.display = 'block';
+  container.innerHTML = `
+    <h3>نتائج الاستيراد</h3>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-number">${total}</div><div class="stat-label">إجمالي الصفوف</div></div>
+      <div class="stat-card success"><div class="stat-number">${incoming}</div><div class="stat-label">تحويلات واردة</div></div>
+      <div class="stat-card"><div class="stat-number">${outgoing}</div><div class="stat-label">تحويلات صادرة</div></div>
+      <div class="stat-card"><div class="stat-number">${skipped}</div><div class="stat-label">تم تخطيها</div></div>
+    </div>
+  `;
+}
+
+function renderResults(result) {
+  if (!result || !result.success) {
+    showToast('لم تتم المطابقة بنجاح', 'error');
+    return;
+  }
+
+  const container = document.getElementById('matchingResults');
+  if (!container) return;
+  container.style.display = 'block';
+
+  const s = result.summary || {};
+
+  let html = `
+    <h3>نتائج المطابقة</h3>
+    <div class="stats-grid">
+      <div class="stat-card success"><div class="stat-number">${s.auto_confirmed || 0}</div><div class="stat-label">تأكيد تلقائي</div></div>
+      <div class="stat-card warning"><div class="stat-number">${s.suggested || 0}</div><div class="stat-label">اقتراحات</div></div>
+      <div class="stat-card danger"><div class="stat-number">${s.unmatched_bank || 0}</div><div class="stat-label">بنكية غير مطابقة</div></div>
+      <div class="stat-card info"><div class="stat-number">${s.unmatched_payments || 0}</div><div class="stat-label">دفعات غير مطابقة</div></div>
+    </div>
+  `;
+
+  // مطابقات تلقائية
+  if (result.auto_confirmed && result.auto_confirmed.length > 0) {
+    html += '<div class="section"><h4>تم التأكيد تلقائيا</h4>';
+    for (const m of result.auto_confirmed) {
+      html += renderMatchCard(m, 'auto');
+    }
+    html += '</div>';
+  }
+
+  // اقتراحات
+  if (result.suggested && result.suggested.length > 0) {
+    html += '<div class="section"><h4>اقتراحات - تحتاج موافقتك</h4>';
+    for (const m of result.suggested) {
+      html += renderMatchCard(m, 'suggestion');
+    }
+    html += '</div>';
+  }
+
+  // مطابقات مجمعة
+  if (result.grouped_matches && result.grouped_matches.length > 0) {
+    html += '<div class="section"><h4>مطابقات مجمعة - تحتاج تأكيدك</h4>';
+    for (const g of result.grouped_matches) {
+      const bankId = g.bankTxn ? g.bankTxn.id : 0;
+      const pIds = (g.payment_ids || []).join(",");
+      let itemsHtml = (g.payments || []).map(p =>
+        '<div class="grouped-item">' + (p.customer_name||"") + ' - ' + (p.total_amount||p.amount||0) + ' </div>'
+      ).join("");
+      html += '<div class="match-card grouped">'+
+        '<div class="card-header">'+
+          '<span class="score medium">' + (g.confidence||0) + '/100</span>'+
+          '<span class="match-type-badge">مجمعة (' + (g.payment_ids||[]).length + ' فواتير)</span>'+
+        '</div>'+
+        '<div class="card-body">'+
+          '<div class="bank-side">'+
+            '<h4>التحويل البنكي</h4>'+
+            '<div class="info-row">المحوّل: ' + (g.bankTxn?g.bankTxn.payer_name:"") + '</div>'+
+            '<div class="info-row">المبلغ: ' + (g.bankTxn?g.bankTxn.amount:0) + ' </div>'+
+          '</div>'+
+          '<div class="payment-side">'+
+            '<h4>الفواتير</h4>'+
+            itemsHtml +
+            '<div class="grouped-total">المجموع: ' + (g.total||0) + '  | الفرق: ' + (g.diff||0) + ' </div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="card-footer">'+
+          '<button class="btn btn-success" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + pIds + '">قبول المجمعة</button>'+
+          '<button class="btn btn-danger" data-action="reject" data-bank-id="' + bankId + '" data-payment-ids="' + pIds + '">رفض</button>'+
+        '</div>'+
+      '</div>';
+    }
+    html += '</div>';
+  }
+
+  // غير مطابقة - بنكية
+  // unmatched bank with actions
+  if (result.unmatched_bank && result.unmatched_bank.length > 0) {
+    html += '<div class="section"><h4>عمليات بنكية غير مطابقة</h4>';
+    for (const b of result.unmatched_bank) {
+      const btId = b.id || b.bank_transaction_id;
+      const bName = (b.parsed_name || "").replace(/"/g, "&quot;");
+      html += `<div class="match-card unmatched" id="bank-tx-${btId}">
+        <div class="card-body">
+          <span class="name">${b.parsed_name || "غير معروف"}</span>
+          <span class="amount">${b.amount} </span>
+          <span class="date">${b.parsed_date || b.raw_date || ""}</span>
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-sm btn-warning btn-manual-match" data-btid="${btId}" data-amount="${b.amount}" data-name="${bName}">مطابقة يدوية</button>
+          <button class="btn btn-sm btn-secondary btn-ignore" data-btid="${btId}">تجاهل</button>
+        </div>
+        <div id="debts-for-${btId}" class="debts-list" style="display:none;"></div>
+      </div>`;
+    }
+    html += "</div>";
+  }
+
+  // غير مطابقة - دفعات
+  if (result.unmatched_payments && result.unmatched_payments.length > 0) {
+    html += '<div class="section"><h4>دفعات معلقة غير مطابقة</h4>';
+    for (const p of result.unmatched_payments) {
+      const amt = p.amount || p.total_amount || p.invoice_amount || 0;
+      const methodLabels = {'transfer':'تحويل بنكي','wallet':'محفظة','debt':'دين','card':'بطاقة','cash':'نقد'};
+      const methodLabel = methodLabels[p.method] || p.method || 'غير محدد';
+      const ref = p.bank_reference ? `<span class="ref">مرجع: ${p.bank_reference}</span>` : '';
+      html += `<div class="match-card unmatched">
+        <div class="card-body">
+          <span class="name">${p.customer_name || 'غير معروف'}</span>
+          <span class="amount">${amt} </span>
+          <span class="method">${methodLabel}</span>
+          ${ref}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+
+  // ربط أزرار القبول والرفض
+  container.querySelectorAll('[data-action="accept"]').forEach(btn => {
+    btn.addEventListener('click', () => handleAccept(btn.dataset.bankId, btn.dataset.paymentIds));
+  });
+  container.querySelectorAll('[data-action="reject"]').forEach(btn => {
+    btn.addEventListener('click', () => handleReject(btn.dataset.bankId, btn.dataset.paymentIds));
+  });
+
+  // أزرار التجاهل
+  container.querySelectorAll(".btn-ignore").forEach(btn => {
+    btn.addEventListener("click", () => ignoreBank(parseInt(btn.dataset.btid)));
+  });
+
+  // أزرار المطابقة اليدوية
+  container.querySelectorAll(".btn-manual-match").forEach(btn => {
+    btn.addEventListener("click", () => showDebtsForBank(parseInt(btn.dataset.btid), parseFloat(btn.dataset.amount), btn.dataset.name));
+  });
+}
+
+function renderMatchCard(m, type) {
+  const bt = m.bankTxn || {};
+  const bd = m.breakdown || {};
+  const score = m.confidence || 0;
+  const bankId = m.bank_transaction_id || bt.id;
+  const paymentId = m.payment_id || '';
+
+  // مستوى الأمان
+  const sec = m.security_level || 'normal';
+  let secIcon = '', secText = '', secClass = 'safe';
+  if (sec === 'warning') { secIcon = ''; secText = 'تحذير'; secClass = 'warning'; }
+  else if (sec === 'danger') { secIcon = ''; secText = 'خطر'; secClass = 'danger'; }
+  else { secIcon = ''; secText = 'آمن'; secClass = 'safe'; }
+
+  // نوع المطابقة
+  const typeLabels = { full: 'كاملة', partial: 'جزئية', over: 'زيادة' };
+  const matchLabel = typeLabels[m.match_type] || 'فردي';
+
+  // لون الثقة
+  const scoreClass = score >= 85 ? 'high' : score >= 65 ? 'medium' : 'low';
+
+  // تحذيرات
+  let warningsHtml = '';
+  const warns = [];
+  if (m.date_category === 'delayed') warns.push(' تحويل متأخر (' + (m.days_diff||0) + ' يوم)');
+  if (m.date_category === 'very_delayed') warns.push(' تحويل متأخر جداً (' + (m.days_diff||0) + ' يوم)');
+  if (bd.name_score && bd.name_score < 60) warns.push(' تطابق ضعيف في الاسم');
+  if (m.phone_matched) warns.push(' تم التطابق عبر رقم الجوال');
+  if (warns.length > 0) {
+    warningsHtml = '<div class="match-warnings">' + warns.map(w => '<div class="warn-item">' + w + '</div>').join('') + '</div>';
+  }
+
+  // دفعة جزئية
+  let partialHtml = '';
+  if (m.match_type === 'partial' && m.shortage_amount > 0) {
+    const pct = m.invoice_amount > 0 ? ((m.shortage_amount / m.invoice_amount) * 100).toFixed(1) : '0';
+    partialHtml = '<div class="partial-box ' + secClass + '">' +
+      '<div class="partial-title">' + secIcon + ' دفعة جزئية</div>' +
+      '<div class="partial-nums">المطلوب: ' + (m.invoice_amount||0).toFixed(2) + ' | المحوّل: ' + (m.amount_paid||0).toFixed(2) + ' | نقص: ' + (m.shortage_amount||0).toFixed(2) + '</div>' +
+      '<div class="security-tag ' + secClass + '">' + secIcon + ' ' + secText + ' (نقص ' + pct + '%)</div>' +
+      '</div>';
+  }
+
+  // بدائل
+  let altHtml = '';
+  if (m.alternatives && m.alternatives.length > 0) {
+    altHtml = '<div class="alt-section"><div class="alt-title"> بدائل:</div>';
+    m.alternatives.forEach(function(alt, i) {
+      altHtml += '<div class="alt-item">' + (i+1) + '. ' + (alt.customer_name||'') + ' (' + (alt.confidence||0) + '%) ' +
+        '<button class="btn-alt" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + (alt.payment_id||'') + '">اختيار</button></div>';
+    });
+    altHtml += '</div>';
+  }
+
+  // أزرار
+  let btns = '';
+  if (type === 'suggestion') {
+    btns = '<button class="btn btn-success" data-action="accept" data-bank-id="' + bankId + '" data-payment-ids="' + paymentId + '"> قبول</button>' +
+           '<button class="btn btn-danger" data-action="reject" data-bank-id="' + bankId + '" data-payment-ids="' + paymentId + '"> رفض</button>';
+  } else if (type === 'auto') {
+    btns = '<button class="btn btn-outline" data-action="undo" data-bank-id="' + bankId + '"> تراجع</button>';
+  }
+
+  return '<div class="match-card ' + secClass + ' ' + type + '">' +
+
+    '<div class="card-header">' +
+      '<span class="score ' + scoreClass + '">' + secIcon + ' ' + score + '/100</span>' +
+      '<span class="match-type-badge">' + matchLabel + '</span>' +
+      '<span class="security-badge ' + secClass + '">' + secText + '</span>' +
+    '</div>' +
+
+    '<div class="card-body">' +
+      '<div class="bank-side">' +
+        '<h4> التحويل البنكي</h4>' +
+        '<div class="info-row"><span class="label">المحوّل:</span> ' + (bt.payer_name||'غير معروف') + '</div>' +
+        '<div class="info-row"><span class="label">المبلغ:</span> ' + (bt.amount||0) + ' </div>' +
+        '<div class="info-row"><span class="label">التاريخ:</span> ' + (bt.parsed_date||'') + '</div>' +
+      '</div>' +
+
+      '<div class="payment-side">' +
+        '<h4> الفاتورة</h4>' +
+        '<div class="info-row"><span class="label">الزبون:</span> ' + (m.customer_name||'') + '</div>' +
+        '<div class="info-row"><span class="label">المبلغ:</span> ' + (m.invoice_amount||0) + ' </div>' +
+        (m.days_diff ? '<div class="info-row"><span class="label">الفرق:</span> ' + m.days_diff + ' يوم</div>' : '') +
+      '</div>' +
+    '</div>' +
+
+    '<div class="breakdown-section">' +
+      '<div class="breakdown-title"> تفاصيل التطابق</div>' +
+      '<div class="bar-row"><span>الاسم</span><div class="bar"><div class="bar-fill" style="width:' + (bd.name_score||0) + '%">' + (bd.name_score||0) + '%</div></div></div>' +
+      '<div class="bar-row"><span>المبلغ</span><div class="bar"><div class="bar-fill" style="width:' + (bd.amount_score||0) + '%">' + (bd.amount_score||0) + '%</div></div></div>' +
+      '<div class="bar-row"><span>التاريخ</span><div class="bar"><div class="bar-fill" style="width:' + (bd.date_score||0) + '%">' + (bd.date_score||0) + '%</div></div></div>' +
+    '</div>' +
+
+    partialHtml +
+    warningsHtml +
+    altHtml +
+
+    '<div class="card-footer">' + btns + '</div>' +
+  '</div>';
+}
+
+async function handleAccept(bankId, paymentIdsStr) {
+  try {
+    const paymentIds = paymentIdsStr.split(',').map(Number);
+    const result = await window.api.acceptMatch(parseInt(bankId), paymentIds);
+    if (result.success) {
+      showToast('تم قبول المطابقة', 'success');
+      // اعادة تحميل
+      if (currentResults) {
+        const updated = await window.api.runMatching();
+        currentResults = updated;
+        renderResults(updated);
+      }
+    } else {
+      showToast('خطأ: ' + (result.error || ''), 'error');
+    }
+  } catch(e) { showToast('خطأ: ' + e.message, 'error'); }
+}
+
+async function handleReject(bankId, paymentIdsStr) {
+  try {
+    const paymentIds = paymentIdsStr.split(',').map(Number);
+    const result = await window.api.rejectMatch(parseInt(bankId), paymentIds);
+    if (result.success) {
+      showToast('تم رفض المطابقة', 'success');
+      const cards = document.querySelectorAll('.match-card');
+      cards.forEach(c => { if (c.innerHTML.includes(bankId)) c.remove(); });
+    } else {
+      showToast('خطأ: ' + (result.error || ''), 'error');
+    }
+  } catch(e) { showToast('خطأ: ' + e.message, 'error'); }
+}
+
+async function loadStats() {
+  try {
+    const stats = await window.api.getMatchingStats();
+    console.log('إحصائيات:', stats);
+    showToast(`مستورد: ${stats.total_imported || 0} | تلقائي: ${stats.matched_auto || 0} | يدوي: ${stats.matched_manual || 0} | معلق: ${stats.pending || 0}`, 'info');
+  } catch(e) { showToast('خطأ: ' + e.message, 'error'); }
+}
+
+function showLoading(msg) {
+  let el = document.getElementById('loadingOverlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'loadingOverlay';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div style="background:white;padding:30px;border-radius:10px;text-align:center;"><div class="spinner"></div><p>${msg || 'جاري التحميل...'}</p></div>`;
+  el.style.display = 'flex';
+}
+
+function hideLoading() {
+  const el = document.getElementById('loadingOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function showToast(msg, type) {
+  console.log('Toast:', type, msg);
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.style.cssText = 'position:fixed;top:20px;left:20px;z-index:10000;';
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement('div');
+  const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
+  toast.style.cssText = `background:${colors[type]||'#333'};color:white;padding:12px 20px;border-radius:8px;margin-bottom:8px;min-width:250px;box-shadow:0 4px 12px rgba(0,0,0,0.3);`;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+// === Manual matching & ignore functions ===
+
+async function ignoreBank(bankTxId) {
+  if (!confirm("هل تريد تجاهل هذه العملية البنكية؟")) return;
+  try {
+    const result = await window.api.ignoreBankTransaction({ bankTransactionId: bankTxId, notes: "manual ignore" });
+    if (result.success) {
+      const card = document.getElementById("bank-tx-" + bankTxId);
+      if (card) card.remove();
+      showToast("تم تجاهل العملية", "success");
+    } else {
+      showToast(result.error || "خطأ", "error");
+    }
+  } catch(e) { showToast("خطأ: " + e.message, "error"); }
+}
+
+async function showDebtsForBank(bankTxId, bankAmount, bankName) {
+  const container = document.getElementById("debts-for-" + bankTxId);
+  if (!container) return;
+
+  // toggle
+  if (container.style.display !== "none") {
+    container.style.display = "none";
+    return;
+  }
+
+  container.innerHTML = "<p>جاري التحميل...</p>";
+  container.style.display = "block";
+
+  try {
+    const result = await window.api.getDebtsForMatching();
+    if (!result.success || !result.debts.length) {
+      container.innerHTML = "<p>لا توجد ذمم معلّقة</p>";
+      return;
+    }
+
+    let html = "<div class=\"debts-select\">";
+    html += "<p><strong>اختر الذمم للربط (الحد: " + bankAmount + " )</strong></p>";
+
+    for (const d of result.debts) {
+      html += "<label class=\"debt-option\" style=\"display:block;padding:4px 0;\">";
+      html += "<input type=\"checkbox\" class=\"debt-cb\" data-id=\"" + d.id + "\" data-amount=\"" + d.amount + "\" data-btid=\"" + bankTxId + "\" data-bank-amount=\"" + bankAmount + "\" /> ";
+    html += "<span>" + (d.customer_name || d.name || "غير معروف") + " - " + d.amount + " (" + ({"transfer":"تحويل بنكي","wallet":"محفظة","debt":"دين","card":"بطاقة","cash":"نقد"}[d.method] || d.method || "غير محدد") + ")</span>";
+      html += "</label>";
+    }
+
+    html += "<div class=\"debt-total\" id=\"debt-total-" + bankTxId + "\" style=\"margin:8px 0;font-weight:bold;\">المحدد: 0  من " + bankAmount + " </div>";
+    html += "<button class=\"btn btn-sm btn-success btn-link-debts\" data-btid=\"" + bankTxId + "\" disabled>ربط</button>";
+    html += "</div>";
+    container.innerHTML = html;
+
+    // event listeners for checkboxes
+    container.querySelectorAll(".debt-cb").forEach(cb => {
+      cb.addEventListener("change", () => {
+        updateDebtTotal(parseInt(cb.dataset.btid), parseFloat(cb.dataset.bankAmount));
+      });
+    });
+
+    // event listener for link button
+    const linkBtn = container.querySelector(".btn-link-debts");
+    if (linkBtn) {
+      linkBtn.addEventListener("click", () => linkDebtsToBank(parseInt(linkBtn.dataset.btid)));
+    }
+  } catch(e) {
+    container.innerHTML = "<p>خطأ: " + e.message + "</p>";
+  }
+}
+
+function updateDebtTotal(bankTxId, bankAmount) {
+  const container = document.getElementById("debts-for-" + bankTxId);
+  if (!container) return;
+  const checkboxes = container.querySelectorAll(".debt-cb:checked");
+  let total = 0;
+  checkboxes.forEach(cb => { total += parseFloat(cb.dataset.amount) || 0; });
+  const totalDiv = document.getElementById("debt-total-" + bankTxId);
+  const btn = container.querySelector(".btn-link-debts");
+  if (totalDiv) {
+    const color = total > bankAmount ? "red" : "green";
+    totalDiv.innerHTML = "المحدد: <span style=\"color:" + color + "\">" + total.toFixed(2) + "</span>  من " + bankAmount + " ";
+  }
+  if (btn) {
+    btn.disabled = (total === 0 || total > bankAmount + 0.01);
+  }
+}
+
+async function linkDebtsToBank(bankTxId) {
+  const container = document.getElementById("debts-for-" + bankTxId);
+  if (!container) return;
+  const checkboxes = container.querySelectorAll(".debt-cb:checked");
+  const paymentIds = [];
+  checkboxes.forEach(cb => { paymentIds.push(parseInt(cb.dataset.id)); });
+
+  if (paymentIds.length === 0) return;
+
+  try {
+    const result = await window.api.manualMatch(bankTxId, paymentIds);
+    if (result.success) {
+      const card = document.getElementById("bank-tx-" + bankTxId);
+      if (card) card.remove();
+      showToast("تم الربط بنجاح", "success");
+      // reload pending
+      await loadPendingMatches();
+    } else {
+      showToast(result.error || "خطأ في الربط", "error");
+    }
+  } catch(e) { showToast("خطأ: " + e.message, "error"); }
+}
+
+
+
+

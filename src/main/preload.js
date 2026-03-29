@@ -1,4 +1,4 @@
-/* ========================================
+﻿/* ========================================
    preload.js - أبو كميل POS v6.0
    الجسر بين العملية الرئيسية وواجهة المستخدم
    محدث: نظام المطابقة الذكية
@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('api', {
 
     // ==================== معلومات التطبيق ====================
     appRelaunch: () => ipcRenderer.invoke('app-relaunch'),
+    // === DEBUG (temporary) ===
+    cleanupDuplicates: () => ipcRenderer.invoke('cleanup-duplicate-payments'),
+    debugCheckDuplicates: () => ipcRenderer.invoke('debug-check-duplicates'),
+    debugMatchingState: () => ipcRenderer.invoke('debug-matching-state'),
     readExcelFile: (filePath) => ipcRenderer.invoke('read-excel-file', filePath),
     getAppInfo: () => ipcRenderer.invoke('get-app-info'),
 
@@ -50,6 +54,7 @@ contextBridge.exposeInMainWorld('api', {
 
     // ==================== إحصائيات اليوم ====================
     getTodayStats: () => ipcRenderer.invoke('get-today-stats'),
+    getPaymentStats: (dateFrom, dateTo) => ipcRenderer.invoke('get-payment-stats', dateFrom, dateTo),
 
     // ==================== الفواتير ====================
     saveInvoice: (data) => ipcRenderer.invoke('save-invoice', data),
@@ -110,6 +115,7 @@ contextBridge.exposeInMainWorld('api', {
     fullTestCleanup: () => ipcRenderer.invoke('full-test-cleanup'),
         resetAllBankTransactions: () => ipcRenderer.invoke('reset-all-bank-transactions'),
         clearOldBankData: () => ipcRenderer.invoke('clear-old-bank-data'),
+    cleanupTestInvoices: (ids) => ipcRenderer.invoke('cleanup-test-invoices', ids),
         resetIgnoredTransactions: () => ipcRenderer.invoke('reset-ignored-transactions'),
     getDebtsForMatching: () => ipcRenderer.invoke('get-debts-for-matching'),
     getUnmatchedBankTransactions: () => ipcRenderer.invoke('get-unmatched-bank-transactions'),
@@ -128,6 +134,7 @@ contextBridge.exposeInMainWorld('api', {
     // ==================== أحداث من Main Process ====================
       getLearningData: () => ipcRenderer.invoke('get-learning-data'),
       checkBankReference: (ref) => ipcRenderer.invoke('check-bank-reference', ref),
+    getCustomerStatement: (customerId, fromDate, toDate) => ipcRenderer.invoke('get-customer-statement', customerId, fromDate, toDate),
     onOverdueTransfers: (callback) => {
         ipcRenderer.on('overdue-transfers', (event, data) => callback(data));
     }

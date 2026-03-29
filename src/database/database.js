@@ -1,4 +1,4 @@
-/**
+﻿/**
  * database.js  –  Abu-Kamil POS
  *
  * Exports (primary names used by main.js):
@@ -90,11 +90,15 @@ function markMigrationDone(db, name) {
 function createCoreTables(db) {
   db.prepare(`
     CREATE TABLE IF NOT EXISTS users (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      username   TEXT NOT NULL UNIQUE,
-      password   TEXT NOT NULL,
-      role       TEXT NOT NULL DEFAULT 'cashier',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      username      TEXT NOT NULL UNIQUE,
+      password      TEXT NOT NULL,
+      password_hash TEXT DEFAULT '',
+      display_name  TEXT DEFAULT '',
+      role          TEXT NOT NULL DEFAULT 'cashier',
+      is_active     INTEGER DEFAULT 1,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT DEFAULT (datetime('now'))
     )
   `).run();
 
@@ -103,6 +107,9 @@ function createCoreTables(db) {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       name        TEXT NOT NULL UNIQUE,
       description TEXT,
+      icon         TEXT DEFAULT '',
+      sort_order   INTEGER DEFAULT 0,
+      is_active    INTEGER DEFAULT 1,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `).run();
@@ -117,6 +124,13 @@ function createCoreTables(db) {
       stock       INTEGER NOT NULL DEFAULT 0,
       barcode     TEXT,
       description TEXT,
+      sale_type    TEXT DEFAULT 'unit',
+      unit         TEXT DEFAULT '',
+      cost_price   REAL DEFAULT 0,
+      stock_qty    REAL DEFAULT 0,
+      min_stock    REAL DEFAULT 0,
+      is_active    INTEGER DEFAULT 1,
+      updated_at   TEXT DEFAULT (datetime('now')),
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `).run();
@@ -131,6 +145,10 @@ function createCoreTables(db) {
       address         TEXT,
       notes           TEXT,
       is_home_transfer INTEGER NOT NULL DEFAULT 0,
+      customer_type TEXT DEFAULT 'regular',
+      debt_ceiling  REAL DEFAULT 0,
+      is_active     INTEGER DEFAULT 1,
+      updated_at    TEXT DEFAULT (datetime('now')),
       created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `).run();
@@ -143,6 +161,11 @@ function createCoreTables(db) {
       status      TEXT NOT NULL DEFAULT 'pending',
       notes       TEXT,
       created_by  INTEGER REFERENCES users(id),
+      customer_name  TEXT DEFAULT '',
+      customer_phone TEXT DEFAULT '',
+      subtotal       REAL DEFAULT 0,
+      discount       REAL DEFAULT 0,
+      payment_status TEXT DEFAULT 'unpaid',
       created_at  TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
@@ -155,7 +178,11 @@ function createCoreTables(db) {
       product_id INTEGER REFERENCES products(id),
       quantity   INTEGER NOT NULL DEFAULT 1,
       unit_price REAL NOT NULL DEFAULT 0,
-      total      REAL NOT NULL DEFAULT 0
+      total        REAL NOT NULL DEFAULT 0,
+      product_name TEXT DEFAULT '',
+      barcode      TEXT DEFAULT '',
+      price        REAL DEFAULT 0,
+      created_at   TEXT DEFAULT (datetime('now'))
     )
   `).run();
 
@@ -177,6 +204,9 @@ function createCoreTables(db) {
       deadline_hours   INTEGER,
       deadline_at      TEXT,
       notes            TEXT,
+      debt_reason          TEXT DEFAULT '',
+      alt_account_relation TEXT DEFAULT '',
+      transfer_deadline    TEXT DEFAULT '',
       created_at       TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
     )
@@ -184,13 +214,38 @@ function createCoreTables(db) {
 
   db.prepare(`
     CREATE TABLE IF NOT EXISTS store_settings (
-      key        TEXT PRIMARY KEY,
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      key        TEXT UNIQUE NOT NULL,
       value      TEXT,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `).run();
 }
 
+
+// Migration: add new store_settings columns
+function migrateStoreSettingsColumns(db) {
+  const columnsToAdd = [
+    { name: 'bank_account_owner', type: 'TEXT' },
+    { name: 'store_type', type: "TEXT DEFAULT 'supermarket'" },
+    { name: 'matching_strictness', type: "TEXT DEFAULT 'high'" },
+    { name: 'default_debt_ceiling', type: "TEXT DEFAULT '500'" },
+  ];
+  const existing = db.pragma('table_info(store_settings)').map(c => c.name);
+  let added = 0;
+  for (const col of columnsToAdd) {
+    if (!existing.includes(col.name)) {
+      try {
+        db.prepare('ALTER TABLE store_settings ADD COLUMN ' + col.name + ' ' + col.type).run();
+        console.log('  [Migration] Added store_settings.' + col.name);
+        added++;
+      } catch (e) {
+        if (!e.message.includes('duplicate column')) throw e;
+      }
+    }
+  }
+  if (added > 0) console.log('  [Migration] Added ' + added + ' new columns to store_settings');
+}
 // ── bank_transactions ────────────────────────────────────────────────────────
 function createBankTransactionsTable(db) {
   db.prepare(`
@@ -260,6 +315,144 @@ function createNameLearningTable(db) {
 
 
   // Fix: add bank_name_raw column if missing
+
+  // === Missing tables needed by main.js and modules ===
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER REFERENCES users(id),
+      login_time  TEXT,
+      logout_time TEXT,
+      is_active   INTEGER DEFAULT 1
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      action      TEXT,
+      entity_type TEXT,
+      entity_id   INTEGER,
+      table_name  TEXT DEFAULT '',
+      record_id   INTEGER,
+      user_id     INTEGER,
+      details     TEXT,
+      old_values  TEXT DEFAULT '',
+      new_values  TEXT DEFAULT '',
+      created_at  TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      type          TEXT,
+      title         TEXT,
+      message       TEXT,
+      entity_type   TEXT,
+      entity_id     INTEGER,
+      customer_id   INTEGER,
+      customer_name TEXT,
+      amount        REAL,
+      is_read       INTEGER DEFAULT 0,
+      created_at    TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS daily_closings (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      closing_date    TEXT NOT NULL,
+      total_sales     REAL DEFAULT 0,
+      total_cash      REAL DEFAULT 0,
+      total_transfer  REAL DEFAULT 0,
+      total_debt      REAL DEFAULT 0,
+      invoice_count   INTEGER DEFAULT 0,
+      notes           TEXT,
+      closed_by       INTEGER REFERENCES users(id),
+      actual_cash     REAL DEFAULT 0,
+      expected_cash   REAL DEFAULT 0,
+      cash_difference REAL DEFAULT 0,
+      closing_data    TEXT DEFAULT '{}',
+      created_at      TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS matching_attempts (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_id          INTEGER REFERENCES payments(id),
+      bank_transaction_id INTEGER REFERENCES bank_transactions(id),
+      confidence          REAL DEFAULT 0,
+      status              TEXT DEFAULT 'pending',
+      match_reason        TEXT,
+      created_at          TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS customer_aliases (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER REFERENCES customers(id),
+      alias_name  TEXT NOT NULL,
+      source      TEXT DEFAULT 'manual',
+      created_at  TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS matching_feedback (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      matching_attempt_id INTEGER,
+      payment_id          INTEGER,
+      bank_transaction_id INTEGER,
+      feedback_type       TEXT,
+      user_id             INTEGER,
+      notes               TEXT,
+      created_at          TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS matching_audit_trail (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      action              TEXT,
+      payment_id          INTEGER,
+      bank_transaction_id INTEGER,
+      old_status          TEXT,
+      new_status          TEXT,
+      user_id             INTEGER,
+      details             TEXT,
+      created_at          TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS customer_credits (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER REFERENCES customers(id),
+      amount      REAL DEFAULT 0,
+      type        TEXT,
+      reference   TEXT,
+      notes       TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS debts (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER REFERENCES customers(id),
+      invoice_id  INTEGER REFERENCES invoices(id),
+      amount      REAL DEFAULT 0,
+      paid        REAL DEFAULT 0,
+      status      TEXT DEFAULT 'pending',
+      due_date    TEXT,
+      notes       TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+
   try { db.prepare("ALTER TABLE name_learning ADD COLUMN bank_name_raw TEXT DEFAULT NULL").run(); } catch(e) { /* exists */ }
   try { db.prepare("ALTER TABLE name_learning ADD COLUMN bank_name_normalized TEXT DEFAULT NULL").run(); } catch(e) { /* exists */ }
   /*
@@ -307,6 +500,42 @@ function runColumnMigrations(db) {
   addCol(db, 'payments', 'updated_at',       'TEXT DEFAULT NULL');
   addCol(db, 'payments', 'paid_amount',      'REAL NOT NULL DEFAULT 0');
   addCol(db, 'payments', 'remaining_amount', 'REAL NOT NULL DEFAULT 0');
+
+  // ── customer_aliases ──────────────────────────────────────────────────────
+  addCol(db, 'customer_aliases', 'normalized_name', 'TEXT');
+  addCol(db, 'customer_aliases', 'confidence', "TEXT DEFAULT 'confirmed'");
+  addCol(db, 'customer_aliases', 'usage_count', 'INTEGER DEFAULT 1');
+
+  // ── customer_credits ──────────────────────────────────────────────────────
+  addCol(db, 'customer_credits', 'related_bank_transaction_id', 'INTEGER');
+
+  // ── debts ─────────────────────────────────────────────────────────────────
+  addCol(db, 'debts', 'is_shortage', 'INTEGER DEFAULT 0');
+  addCol(db, 'debts', 'related_payment_id', 'INTEGER');
+  addCol(db, 'debts', 'related_bank_transaction_id', 'INTEGER');
+
+  // ── matching_feedback (upgrade old schema) ────────────────────────────────
+  addCol(db, 'matching_feedback', 'bank_payer_name', "TEXT NOT NULL DEFAULT ''");
+  addCol(db, 'matching_feedback', 'payment_customer_name', "TEXT NOT NULL DEFAULT ''");
+  addCol(db, 'matching_feedback', 'bank_payer_name_normalized', "TEXT NOT NULL DEFAULT ''");
+  addCol(db, 'matching_feedback', 'payment_customer_name_normalized', "TEXT NOT NULL DEFAULT ''");
+  addCol(db, 'matching_feedback', 'bank_amount', 'REAL');
+  addCol(db, 'matching_feedback', 'payment_amount', 'REAL');
+  addCol(db, 'matching_feedback', 'decision_type', "TEXT NOT NULL DEFAULT 'auto_confirmed'");
+  addCol(db, 'matching_feedback', 'confidence_score', 'REAL');
+  addCol(db, 'matching_feedback', 'score_breakdown', 'TEXT');
+  addCol(db, 'matching_feedback', 'decided_by', "TEXT DEFAULT 'system'");
+  addCol(db, 'matching_feedback', 'decided_at', 'TEXT');
+
+  // ── matching_audit_trail (upgrade old schema) ─────────────────────────────
+  addCol(db, 'matching_audit_trail', 'decision_type', "TEXT NOT NULL DEFAULT ''");
+  addCol(db, 'matching_audit_trail', 'confidence_score', 'REAL');
+  addCol(db, 'matching_audit_trail', 'match_type', 'TEXT');
+  addCol(db, 'matching_audit_trail', 'audit_data', "TEXT NOT NULL DEFAULT '{}'");
+  addCol(db, 'matching_audit_trail', 'can_reverse', 'INTEGER DEFAULT 1');
+  addCol(db, 'matching_audit_trail', 'reversed_at', 'TEXT');
+  addCol(db, 'matching_audit_trail', 'reversed_by', 'TEXT');
+  addCol(db, 'matching_audit_trail', 'reverse_reason', 'TEXT');
   addCol(db, 'payments', 'total_amount',     'REAL NOT NULL DEFAULT 0');
   addCol(db, 'payments', 'is_home_transfer', 'INTEGER NOT NULL DEFAULT 0');
   addCol(db, 'payments', 'transfer_type',    'TEXT');
@@ -407,6 +636,8 @@ function runOneTimeCleanup(db) {
     if (tableExists(db, 'payment_installments')) {
       const r = db.prepare('DELETE FROM payment_installments').run();
       console.log(`[DB] Cleared payment_installments: ${r.changes} rows`);
+
+  // فهارس تسريع المطابقة (المرحلة 2)   const newIndexes = [     ['idx_bank_tx_pending_date', "CREATE INDEX IF NOT EXISTS idx_bank_tx_pending_date ON bank_transactions (match_status, parsed_date) WHERE match_status = 'pending'"],     ['idx_bank_tx_payer_name', "CREATE INDEX IF NOT EXISTS idx_bank_tx_payer_name ON bank_transactions (payer_name_normalized) WHERE payer_name_normalized IS NOT NULL"],     ['idx_payments_pending_method', "CREATE INDEX IF NOT EXISTS idx_payments_pending_method ON payments (status, method, created_at)"],     ['idx_payments_customer', "CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments (customer_id)"]   ];   for (const [name, sql] of newIndexes) {     if (!indexExists(db, name)) {       db.prepare(sql).run();       console.log('[DB] Created index:', name);     }   }
     }
 
     // 2. Reset match_status and matched_payment_id for all rows
@@ -477,9 +708,42 @@ function runOneTimeCleanup(db) {
 function seedInitialData(db) {
   if (db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) {
     db.prepare(`
-      INSERT INTO users (username, password, role)
-      VALUES ('admin','admin123','admin'), ('cashier','cashier123','cashier')
+      INSERT INTO users (username, password, password_hash, display_name, role, is_active)
+      VALUES ('admin','admin123','admin123','مدير النظام','admin',1), ('cashier','cashier123','cashier123','كاشير','cashier',1)
     `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS grouped_matches (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_key   TEXT,
+      bank_transaction_id INTEGER,
+      payment_id  INTEGER,
+      match_type  TEXT,
+      confidence  REAL DEFAULT 0,
+      status      TEXT DEFAULT 'pending',
+      reversed_at TEXT DEFAULT NULL,
+      created_at  TEXT DEFAULT (datetime('now'))
+    ))
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS installments (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_id  INTEGER,
+      customer_id INTEGER,
+      bank_transaction_id INTEGER,
+      amount      REAL DEFAULT 0,
+      due_date    TEXT,
+      paid_date   TEXT,
+      status      TEXT DEFAULT 'pending',
+      notes       TEXT DEFAULT '',
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
     console.log('[DB] Seeded users');
   }
 
@@ -536,6 +800,7 @@ function initializeDatabase(dbPath) {
   createPaymentInstallmentsTable(_db);
   createNameLearningTable(_db);
   runColumnMigrations(_db);   // ALTER TABLE – fills gaps in existing DBs
+  migrateStoreSettingsColumns(_db);
   applyIndexes(_db);
   seedInitialData(_db);
   runOneTimeCleanup(_db);     // one-time dedup + rehash

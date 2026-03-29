@@ -1,30 +1,156 @@
-﻿// matching-config.js - إعدادات محرك المطابقة
+// ============================================================
+// matching-config.js v9.0
+// Abu Kamil POS - Unified Matching Engine Configuration
+// Zero false-positives priority | Gaza supermarket context
+// ============================================================
+'use strict';
+
 module.exports = {
-  // === Amount Gates ===
-  amount_block_multiplier: 5,      // رفض مطلق: أكثر من 5 أضعاف
-  amount_min_ratio: 0.05,          // رفض مطلق: أقل من 5% من المبلغ
 
-  // === Date Gates ===
-  date_soft_limit_days: 90,        // الحد الطبيعي
-  date_hard_limit_days: 365,       // الحد الأقصى المطلق
+  // ═══════════════════════════════════════════════
+  // 1. ACCEPTANCE THRESHOLDS
+  // ═══════════════════════════════════════════════
 
-  // === Amount Penalty Tiers ===
-  // bankAmount vs paymentAmount ratio penalties
-  amount_penalties: {
-    exact:     { max_ratio: 1.01, penalty: 0   },  // تطابق تام (1%)
-    partial:   { min_ratio: 0.05, penalty: 10  },  // دفع جزئي
-    over_low:  { max_ratio: 1.20, penalty: 15  },  // زيادة حتى 20%
-    over_mid:  { max_ratio: 2.00, penalty: 30  },  // زيادة 20-100%
-    over_high: { max_ratio: 3.00, penalty: 50  },  // زيادة 100-200%
-    over_max:  { max_ratio: 5.00, penalty: 70  }   // زيادة 200-400%
+  /** >= this => auto-confirm without human review */
+  AUTO_CONFIRM_THRESHOLD: 95,
+
+  /** >= this => suggest for manual review */
+  SUGGEST_THRESHOLD: 65,
+
+  /** >= this => accept full match */
+  FULL_MIN_THRESHOLD: 70,
+
+  /** >= this => accept partial-payment match (stricter) */
+  PARTIAL_MIN_THRESHOLD: 75,
+
+  // ═══════════════════════════════════════════════
+  // 2. FINAL SCORE WEIGHTS  (must sum to 1.00)
+  // ═══════════════════════════════════════════════
+
+  WEIGHTS: {
+    name:    0.50,   // name similarity dominates — the biggest differentiator
+    amount:  0.30,   // amount match
+    date:    0.15,   // date proximity
+    context: 0.05,   // context (home transfer, etc.)
   },
 
-  // === Date Penalty Tiers ===
-  date_penalties: {
-    week:      { max_days: 7,   penalty: 0  },
-    month:     { max_days: 30,  penalty: 10 },
-    quarter:   { max_days: 90,  penalty: 25 },
-    half_year: { max_days: 180, penalty: 50 },
-    beyond:    { max_days: 365, penalty: 70 }
-  }
+  // ═══════════════════════════════════════════════
+  // 3. BONUS / PENALTIES
+  // ═══════════════════════════════════════════════
+
+  /** Bonus for debts flagged is_home_transfer */
+  HOME_TRANSFER_BONUS: 5,
+
+  /** Learning service: positive feedback multiplier */
+  LEARNING_BOOST_MULTIPLIER: 3,
+
+  /** Learning service: negative feedback penalty */
+  LEARNING_NEGATIVE_PENALTY: 10,
+
+  // ═══════════════════════════════════════════════
+  // 4. AMOUNT LIMITS
+  // ═══════════════════════════════════════════════
+
+  /** Bank amount must be >= 20% of invoice (partial payment floor) */
+  AMOUNT_MIN_RATIO: 0.20,
+
+  /** Bank amount must be <= 120% of invoice (over-payment ceiling) */
+  AMOUNT_MAX_RATIO: 1.20,
+
+  /** +/- 2 ILS => exact match (covers bank commission) */
+  AMOUNT_EXACT_TOLERANCE: 0.5,
+
+  // ═══════════════════════════════════════════════
+  // 5. DATE LIMITS & PENALTIES
+  // ═══════════════════════════════════════════════
+
+  /** Absolute hard limit — ignore beyond this */
+  DATE_HARD_LIMIT_DAYS: 365,
+
+  /** No penalty zone */
+  DATE_NORMAL_DAYS: 30,
+
+  /** Delayed zone — small penalty */
+  DATE_DELAYED_DAYS: 60,
+  DATE_PENALTY_DELAYED: 10,
+
+  /** Very delayed zone — bigger penalty */
+  DATE_VERY_DELAYED_DAYS: 90,
+  DATE_PENALTY_VERY_DELAYED: 20,
+
+  // ═══════════════════════════════════════════════
+  // 6. NAME SCORE LIMITS
+  // ═══════════════════════════════════════════════
+
+  /** Minimum name score to consider a match at all */
+  NAME_MIN_SCORE: 56,
+
+  /** Higher bar for partial payments (must be more certain) */
+  NAME_MIN_SCORE_PARTIAL: 65,
+
+  /** Score granted when phone number matches in description */
+  NAME_PHONE_SCORE: 85,
+
+  // ═══════════════════════════════════════════════
+  // 7. CONTEXT SCORES
+  // ═══════════════════════════════════════════════
+
+  /** Context score if home transfer */
+  CONTEXT_HOME_TRANSFER: 65,
+
+  /** Context score for normal transfer */
+  CONTEXT_NORMAL: 40,
+
+  // ═══════════════════════════════════════════════
+  // 8. LEARNING LAYER WEIGHTS
+  // ═══════════════════════════════════════════════
+
+  /** When matching via learning cache: weight for learned-name confidence */
+  LEARNED_NAME_WEIGHT: 0.65,
+
+  /** When matching via learning cache: weight for amount score */
+  LEARNED_AMOUNT_WEIGHT: 0.35,
+
+  // ═══════════════════════════════════════════════
+  // 9. PARTIAL PAYMENT LEVELS
+  // ═══════════════════════════════════════════════
+
+  /** <= 20% shortage => safe */
+  PARTIAL_SAFE_PCT: 5,
+
+  /** <= 50% shortage => warning */
+  PARTIAL_WARNING_PCT: 50,
+
+  // ═══════════════════════════════════════════════
+  // 10. LAYER 2 STRICTER GATE
+  // ═══════════════════════════════════════════════
+
+  /** Minimum confidence to accept Layer 2 result */
+  LAYER2_MIN_CONFIDENCE: 70,
+
+  /** Minimum amount score to accept Layer 2 result */
+  LAYER2_MIN_AMOUNT_SCORE: 25,
+
+  // ═══════════════════════════════════════════════
+  // 11. LAYER 3 (GROUPED) SETTINGS
+  // ═══════════════════════════════════════════════
+
+  /** Max invoices in one grouped match */
+  GROUPED_MAX_INVOICES: 4,
+
+  /** Amount tolerance for grouped match (ILS) */
+  GROUPED_AMOUNT_TOLERANCE: 3,
+
+  /** Minimum confidence for grouped match suggestion */
+  GROUPED_MIN_CONFIDENCE: 65,
+
+  /** Minimum name score to consider customer for grouping */
+  GROUPED_MIN_NAME_SCORE: 55,
+
+  // ═══════════════════════════════════════════════
+  // 12. PERFORMANCE
+  // ═══════════════════════════════════════════════
+
+  /** Warn if layer processing exceeds this (ms) */
+  PERFORMANCE_WARN_MS: 1000,
 };

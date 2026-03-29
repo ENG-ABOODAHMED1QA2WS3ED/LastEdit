@@ -10,6 +10,10 @@ const fs = require('fs');
 const { initializeDatabase, getDatabase, closeDatabase } = require('../database/database');
 const { MatchingEngine } = require('./matching-engine');
 const { runMigrationV8 } = require('./migration-v8');
+const LicenseManager = require('./license-manager');
+const { createStatementHandler } = require('./customer-statement');
+let licenseManager = null;
+let activationWindow = null;
 
 // === UTF-8 Console Fix (Windows) ===
 if (process.platform === 'win32') {
@@ -38,7 +42,7 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false
         },
-        icon: path.join(__dirname, '../../assets/icon.png'),
+        icon: path.join(__dirname, '../../assets/icon.ico'),
         title: 'أبو كميل POS',
         show: false
     });
@@ -146,8 +150,20 @@ app.whenReady().then(() => {
         return;
     }
 
-    createWindow();
+    // === فحص الترخيص قبل فتح التطبيق ===
+    const userDataPath = app.getPath('userData');
+    licenseManager = new LicenseManager(userDataPath);
     registerIpcHandlers();
+    registerLicenseHandlers();
+
+    const licenseCheck = licenseManager.checkLicense();
+    // دائماً نعرض شاشة التفعيل عشان المستخدم يشوف حالة الاشتراك
+    console.log('[License]', licenseCheck.valid ? 'ترخيص فعّال - عرض حالة الاشتراك' : 'بحاجة لتفعيل:', licenseCheck.error || '');
+    openActivationWindow();
+
+
+
+
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -168,20 +184,165 @@ function recalcInvoicePaymentStatus(invoiceId) {
     if (!invoiceId || !db) return;
     const invoice = db.prepare('SELECT total FROM invoices WHERE id = ?').get(invoiceId);
     if (!invoice) return;
-    const result = db.prepare("SELECT COALESCE(SUM(amount), 0) as paid FROM payments WHERE invoice_id = ? AND status IN ('confirmed', 'paid')").get(invoiceId);
+
+    const payments = db.prepare(
+        "SELECT id, method, amount, status, COALESCE(paid_amount, 0) as paid_amount, COALESCE(remaining_amount, 0) as remaining_amount FROM payments WHERE invoice_id = ?"
+    ).all(invoiceId);
+
+    let totalPaid = 0;
+    let hasPending = false;
+    const pendingTransfers = [];
+
+    for (const p of payments) {
+        if (p.status === 'confirmed' || p.status === 'paid') {
+            // ══ KEY FIX: Use paid_amount when available, fall back to amount ══
+            // For partial transfers: paid_amount=19, amount=20 -> use 19
+            // For full payments: paid_amount=0 or null, amount=50 -> use amount
+            // For debts that were paid: paid_amount=1, amount=1 -> use amount (same)
+            if (p.paid_amount > 0) {
+                totalPaid += p.paid_amount;
+            } else {
+                totalPaid += p.amount;
+            }
+        } else if (p.status === 'partial' && p.paid_amount > 0) {
+            totalPaid += p.paid_amount;
+        } else if (p.status === 'pending' || p.status === 'awaiting_transfer' || p.status === 'pending_match') {
+            hasPending = true;
+            if (p.method === 'transfer') {
+                pendingTransfers.push(p);
+            }
+        }
+    }
+
+    // ══════════════ AUTO-RESOLVE PENDING TRANSFERS ══════════════
+    // When all shortage debts on an invoice are settled, confirm the pending transfer.
+    // Uses paid_amount for accurate calculation (not amount which may be the original full value).
+    if (pendingTransfers.length > 0) {
+        let paidWithoutPendingTransfers = 0;
+        for (const p of payments) {
+            if (p.method === 'transfer' && (p.status === 'pending' || p.status === 'awaiting_transfer' || p.status === 'partial')) continue;
+            if (p.status === 'confirmed' || p.status === 'paid') {
+                if (p.paid_amount > 0) {
+                    paidWithoutPendingTransfers += p.paid_amount;
+                } else {
+                    paidWithoutPendingTransfers += p.amount;
+                }
+            } else if (p.status === 'partial' && p.paid_amount > 0) {
+                paidWithoutPendingTransfers += p.paid_amount;
+            }
+        }
+
+        for (const pt of pendingTransfers) {
+            // Use paid_amount of the transfer (what actually arrived) + settled debts
+            const transferActualPaid = pt.paid_amount > 0 ? pt.paid_amount : pt.amount;
+            if (paidWithoutPendingTransfers + transferActualPaid >= invoice.total) {
+                try {
+                    db.prepare(
+                        "UPDATE payments SET status = 'confirmed', remaining_amount = 0, updated_at = datetime('now','localtime') WHERE id = ?"
+                    ).run(pt.id);
+                    totalPaid += transferActualPaid;
+                    hasPending = pendingTransfers.length <= 1 ? false : hasPending;
+                    console.log('[recalc] Auto-confirmed transfer #' + pt.id + ' (paid=' + transferActualPaid + ') on invoice #' + invoiceId);
+                } catch(e) {
+                    console.warn('[recalc] Failed to auto-confirm transfer:', e.message);
+                }
+            }
+        }
+    }
+
     let newStatus;
-    if (result.paid >= invoice.total) {
+    if (totalPaid >= invoice.total) {
         newStatus = 'paid';
-    } else if (result.paid > 0) {
+    } else if (totalPaid > 0 || hasPending) {
         newStatus = 'partial';
     } else {
         newStatus = 'unpaid';
     }
+    
     db.prepare('UPDATE invoices SET payment_status = ? WHERE id = ?').run(newStatus, invoiceId);
     return newStatus;
 }
 
 function registerIpcHandlers() {
+
+    // === كشف حساب الزبون ===
+    const statementHandler = createStatementHandler(db);
+    ipcMain.handle('get-customer-statement', async (event, customerId, fromDate, toDate) => {
+        try {
+            return statementHandler.getCustomerStatement(customerId, fromDate, toDate);
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+
+    // === DEBUG: temporary diagnostic handler ===
+    
+  
+  ipcMain.handle('cleanup-duplicate-payments', async () => {
+    try {
+      const dupes = db.prepare(`
+        SELECT invoice_id, amount, GROUP_CONCAT(id) as payment_ids, COUNT(*) as cnt
+        FROM payments
+        WHERE status = 'confirmed'
+        GROUP BY invoice_id, amount
+        HAVING cnt > 1
+      `).all();
+
+      if (dupes.length === 0) return { success: true, message: 'No duplicates found', deleted: 0 };
+
+      let totalDeleted = 0;
+      const details = [];
+
+      for (const dupe of dupes) {
+        const ids = dupe.payment_ids.split(',').map(Number);
+        const keepId = Math.min(...ids);
+        const deleteIds = ids.filter(id => id !== keepId);
+
+        for (const delId of deleteIds) {
+          db.prepare('DELETE FROM payments WHERE id = ?').run(delId);
+          totalDeleted++;
+        }
+        details.push({
+          invoice_id: dupe.invoice_id,
+          amount: dupe.amount,
+          kept: keepId,
+          deleted: deleteIds
+        });
+      }
+
+      return { success: true, deleted: totalDeleted, details };
+    } catch(e) { return { success: false, error: e.message }; }
+  });
+
+  ipcMain.handle('debug-check-duplicates', async () => {
+    try {
+      const dupes = db.prepare(`
+        SELECT invoice_id, amount, COUNT(*) as cnt, GROUP_CONCAT(id) as payment_ids
+        FROM payments 
+        WHERE status = 'confirmed'
+        GROUP BY invoice_id, amount 
+        HAVING cnt > 1
+      `).all();
+      const totalPayments = db.prepare('SELECT COUNT(*) as c FROM payments').get();
+      const confirmed = db.prepare("SELECT COUNT(*) as c FROM payments WHERE status = 'confirmed'").get();
+      const matchAttempts = db.prepare('SELECT COUNT(*) as c FROM matching_attempts').get();
+      const bankMatched = db.prepare("SELECT COUNT(*) as c FROM bank_transactions WHERE match_status != 'pending'").get();
+      const bankPending = db.prepare("SELECT COUNT(*) as c FROM bank_transactions WHERE match_status = 'pending'").get();
+      return { dupes, totalPayments, confirmed, matchAttempts, bankMatched, bankPending };
+    } catch(e) { return { error: e.message }; }
+  });
+
+  ipcMain.handle('debug-matching-state', async () => {
+        try {
+            const bankMatched = db.prepare("SELECT id, match_status, matched_payment_id, parsed_name, amount FROM bank_transactions WHERE match_status != 'pending' ORDER BY id DESC LIMIT 10").all();
+            const bankPending = db.prepare("SELECT COUNT(*) as cnt FROM bank_transactions WHERE match_status = 'pending'").get();
+            const attempts = db.prepare("SELECT id, bank_transaction_id, payment_id, decision, score FROM matching_attempts ORDER BY id DESC LIMIT 20").all();
+            const paymentsConfirmed = db.prepare("SELECT id, invoice_id, status, method, amount FROM payments WHERE status = 'confirmed' ORDER BY id DESC LIMIT 10").all();
+            const paymentsPending = db.prepare("SELECT id, invoice_id, status, method, amount FROM payments WHERE status IN ('pending','pending_match','awaiting_transfer') ORDER BY id DESC LIMIT 10").all();
+            return { bank_matched: bankMatched, bank_pending_count: bankPending.cnt, matching_attempts: attempts, payments_confirmed: paymentsConfirmed, payments_pending: paymentsPending };
+        } catch(e) { return { error: e.message }; }
+    });
+    // === END DEBUG ===
 
     // ==================== معلومات التطبيق ====================
 ipcMain.handle('get-app-info', async () => {
@@ -223,7 +384,7 @@ ipcMain.handle('get-app-info', async () => {
         try {
             const current = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
             if (!current) {
-                db.prepare("INSERT INTO store_settings (id) VALUES (1)").run();
+                db.prepare("INSERT OR IGNORE INTO store_settings (id, key, value) VALUES (1, '_config', 'default')").run();
             }
             const fields = [];
             const values = [];
@@ -396,20 +557,20 @@ ipcMain.handle('get-app-info', async () => {
         }
     });
 
-    ipcMain.handle('update-customer', async (event, data) => {
+    ipcMain.handle('update-customer', async (event, id, data) => {
         try {
             if (data.alt_account_name !== undefined) {
                 db.prepare(`
                     UPDATE customers SET name=?, phone=?, address=?, customer_type=?, debt_ceiling=?, notes=?,
                     alt_account_name=?, alt_account_relation=?, updated_at=datetime('now','localtime') WHERE id=?
                 `).run(data.name || '', data.phone || null, data.address || null, data.customer_type || 'regular',
-                    data.debt_ceiling || 500, data.notes || null, data.alt_account_name, data.alt_account_relation || null, data.id);
+                    data.debt_ceiling || 500, data.notes || null, data.alt_account_name, data.alt_account_relation || null, id);
             } else {
                 db.prepare(`
                     UPDATE customers SET name=?, phone=?, address=?, customer_type=?, debt_ceiling=?, notes=?,
                     updated_at=datetime('now','localtime') WHERE id=?
                 `).run(data.name || '', data.phone || null, data.address || null, data.customer_type || 'regular',
-                    data.debt_ceiling || 500, data.notes || null, data.id);
+                    data.debt_ceiling || 500, data.notes || null, id);
             }
             return { success: true };
         } catch (error) {
@@ -452,29 +613,103 @@ ipcMain.handle('get-app-info', async () => {
         try {
             const { payment_id, amount, method, notes } = data;
 
-            const payment = db.prepare('SELECT p.*, i.customer_id FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE p.id = ?').get(payment_id);
+            const payment = db.prepare('SELECT p.*, i.customer_id, i.total as invoice_total FROM payments p JOIN invoices i ON p.invoice_id = i.id WHERE p.id = ?').get(payment_id);
             if (!payment) return { success: false, error: 'الدين غير موجود' };
 
             const payTransaction = db.transaction(() => {
                 if (amount >= payment.amount) {
-                    db.prepare(`UPDATE payments SET status = 'paid', notes = COALESCE(notes, '') || ? WHERE id = ?`)
-                        .run(` | تم السداد ${method === 'cash' ? 'نقداً' : method} - ${notes || ''}`, payment_id);
+                    // ══ سداد كامل: حدّث status + paid_amount + remaining_amount ══
+                    db.prepare(`
+                        UPDATE payments SET
+                            status = 'confirmed',
+                            paid_amount = ?,
+                            remaining_amount = 0,
+                            notes = COALESCE(notes, '') || ?
+                        WHERE id = ?
+                    `).run(
+                        payment.amount,
+                        ' | تم السداد ' + (method === 'cash' ? 'نقدا' : method) + ' - ' + (notes || ''),
+                        payment_id
+                    );
                 } else {
-                    db.prepare(`UPDATE payments SET amount = amount - ?, notes = COALESCE(notes, '') || ? WHERE id = ?`)
-                        .run(amount, ` | سداد جزئي ${amount} ${method} - ${notes || ''}`, payment_id);
+                    // ══ سداد جزئي: خفض المبلغ المتبقي ══
+                    db.prepare(`
+                        UPDATE payments SET
+                            paid_amount = COALESCE(paid_amount, 0) + ?,
+                            remaining_amount = CASE WHEN remaining_amount IS NOT NULL THEN remaining_amount - ? ELSE amount - ? END,
+                            notes = COALESCE(notes, '') || ?
+                        WHERE id = ?
+                    `).run(
+                        amount,
+                        amount,
+                        amount,
+                        ' | سداد جزئي ' + amount + ' ' + method + ' - ' + (notes || ''),
+                        payment_id
+                    );
                 }
 
                 db.prepare(`
                     INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, created_at)
                     VALUES ('pay_debt', 'payment', ?, ?, ?, datetime('now','localtime'))
-                `).run(payment_id, currentUserId, `سداد ${amount} من دين ${payment.customer_id} - ${method} - ${notes || ""}`);
-
-
+                `).run(payment_id, currentUserId, 'سداد ' + amount + ' من دين - ' + method + ' - ' + (notes || ''));
             });
 
             payTransaction();
+
+            // ══════════════ AUTO-CONFIRM RELATED TRANSFER ══════════════
+            // Strategy: Find the original transfer that this debt is a shortage of.
+            // Method 1: Check notes for "shortage_of_payment:XXX" marker
+            // Method 2: Find pending/partial transfer on same invoice
+            // When all debts on the invoice are confirmed/paid, confirm the transfer too.
+            try {
+                let relatedTransferId = null;
+
+                // Method 1: Extract from notes marker (new debts created by engine)
+                const notesStr = payment.notes || '';
+                const markerMatch = notesStr.match(/shortage_of_payment:(\d+)/);
+                if (markerMatch) {
+                    relatedTransferId = parseInt(markerMatch[1]);
+                }
+
+                // Method 2: Find partial/pending transfer on same invoice (legacy debts)
+                if (!relatedTransferId) {
+                    const transferOnInvoice = db.prepare(
+                        "SELECT id FROM payments WHERE invoice_id = ? AND method = 'transfer' AND status IN ('partial', 'pending', 'awaiting_transfer') ORDER BY id ASC LIMIT 1"
+                    ).get(payment.invoice_id);
+                    if (transferOnInvoice) {
+                        relatedTransferId = transferOnInvoice.id;
+                    }
+                }
+
+                if (relatedTransferId) {
+                    // Check if ALL debts related to this invoice are now settled
+                    const pendingDebts = db.prepare(
+                        "SELECT COUNT(*) as count FROM payments WHERE invoice_id = ? AND method = 'debt' AND status IN ('pending', 'unpaid')"
+                    ).get(payment.invoice_id);
+
+                    if (pendingDebts.count === 0) {
+                        // All debts paid -> confirm the original transfer
+                        const transfer = db.prepare('SELECT * FROM payments WHERE id = ?').get(relatedTransferId);
+                        if (transfer && transfer.status !== 'confirmed') {
+                            db.prepare(`
+                                UPDATE payments SET
+                                    status = 'confirmed',
+                                    remaining_amount = 0,
+                                    updated_at = datetime('now','localtime')
+                                WHERE id = ?
+                            `).run(relatedTransferId);
+                            console.log('[PayDebt] Auto-confirmed transfer #' + relatedTransferId + ' - all shortage debts settled');
+                        }
+                    } else {
+                        console.log('[PayDebt] Transfer #' + relatedTransferId + ' still has ' + pendingDebts.count + ' pending debts');
+                    }
+                }
+            } catch(autoConfirmErr) {
+                console.warn('[PayDebt] Auto-confirm check failed:', autoConfirmErr.message);
+            }
+
             recalcInvoicePaymentStatus(payment.invoice_id);
-            return { success: true, message: `تم سداد ${amount}` };
+            return { success: true, message: 'تم سداد ' + amount };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -539,6 +774,12 @@ ipcMain.handle('get-app-info', async () => {
                 SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total
                 FROM invoices WHERE date(created_at) = date('now','localtime')
             `).get();
+            const cards = db.prepare(`
+                SELECT COALESCE(SUM(p.amount), 0) as total
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE date(i.created_at) = date('now','localtime') AND p.method = 'card'
+            `).get();
+
 
             const cash = db.prepare(`
                 SELECT COALESCE(SUM(p.amount), 0) as total
@@ -549,13 +790,13 @@ ipcMain.handle('get-app-info', async () => {
             const transfers = db.prepare(`
                 SELECT COALESCE(SUM(p.amount), 0) as total
                 FROM payments p JOIN invoices i ON p.invoice_id = i.id
-                WHERE date(i.created_at) = date('now','localtime') AND p.method IN ('transfer', 'wallet') AND p.status != 'confirmed'
+                WHERE date(i.created_at) = date('now','localtime') AND p.method IN ('transfer', 'wallet')
             `).get();
 
             const debts = db.prepare(`
                 SELECT COALESCE(SUM(p.amount), 0) as total
-                FROM payments p
-                WHERE p.method = 'debt' AND p.status IN ('pending', 'unpaid')
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE date(i.created_at) = date('now','localtime') AND p.method = 'debt'
             `).get();
 
             const pendingTransfers = db.prepare(`
@@ -568,7 +809,7 @@ ipcMain.handle('get-app-info', async () => {
                 success: true,
                 stats: {
                     sales_count: sales.count, sales_total: sales.total,
-                    cash_total: cash.total, transfers_total: transfers.total,
+                    cash_total: cash.total, card_total: cards.total, transfers_total: transfers.total,
                     debts_total: debts.total,
                     pending_transfers_count: pendingTransfers.count, pending_transfers_total: pendingTransfers.total
                 }
@@ -605,21 +846,21 @@ ipcMain.handle('get-app-info', async () => {
                 }
 
                 const insertPayment = db.prepare(`
-                    INSERT INTO payments (invoice_id, method, amount, status, transfer_type, debt_reason, alt_account_name, alt_account_relation, transfer_deadline, notes, bank_reference, created_at)
-                    VALUES (@invoice_id, @method, @amount, @status, @transfer_type, @debt_reason, @alt_account_name, @alt_account_relation, @transfer_deadline, @notes, @bank_reference, datetime('now','localtime'))
+                    INSERT INTO payments (invoice_id, customer_id, method, amount, status, transfer_type, debt_reason, alt_account_name, alt_account_relation, transfer_deadline, notes, bank_reference, created_at)
+                    VALUES (@invoice_id, @customer_id, @method, @amount, @status, @transfer_type, @debt_reason, @alt_account_name, @alt_account_relation, @transfer_deadline, @notes, @bank_reference, datetime('now','localtime'))
                 `);
 
 
                 // Pure function: builds payment data object from form input
-                function buildPaymentData(pay, invoiceId) {
+                function buildPaymentData(pay, invoiceId, customerId) {
                     if (pay.method === "cash") {
-                        return { invoice_id: invoiceId, method: "cash", amount: pay.amount, status: "confirmed", transfer_type: null, debt_reason: null, alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: "دفع نقدي", bank_reference: null };
+                        return { invoice_id: invoiceId, customer_id: customerId || null, method: "cash", amount: pay.amount, status: "confirmed", transfer_type: null, debt_reason: null, alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: "دفع نقدي", bank_reference: null };
                     }
                     if (pay.method === "card") {
-                        return { invoice_id: invoiceId, method: "card", amount: pay.amount, status: "confirmed", transfer_type: null, debt_reason: null, alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: "دفع بالبطاقة", bank_reference: null };
+                        return { invoice_id: invoiceId, customer_id: customerId || null, method: "card", amount: pay.amount, status: "confirmed", transfer_type: null, debt_reason: null, alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: "دفع بالبطاقة", bank_reference: null };
                     }
                     if (pay.method === "debt") {
-                        return { invoice_id: invoiceId, method: "debt", amount: pay.amount, status: "pending", transfer_type: null, debt_reason: pay.debt_reason || "دين مباشر", alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: pay.notes || "دين على الزبون", bank_reference: null };
+                        return { invoice_id: invoiceId, customer_id: customerId || null, method: "debt", amount: pay.amount, status: "pending", transfer_type: null, debt_reason: pay.debt_reason || "دين مباشر", alt_account_name: null, alt_account_relation: null, transfer_deadline: null, notes: pay.notes || "دين على الزبون", bank_reference: null };
                     }
                     // transfer or wallet
                     const transferType = pay.transfer_type || pay.timing || "now";
@@ -627,11 +868,11 @@ ipcMain.handle('get-app-info', async () => {
                     const altRelation = pay.alt_account_relation || null;
                     const bankType = pay.method === "transfer" ? (pay.bank || "bank_palestine") : "palpay";
                     if (transferType === "now") {
-                        return { invoice_id: invoiceId, method: pay.method, amount: pay.amount, status: "pending", transfer_type: bankType, debt_reason: null, alt_account_name: altName, alt_account_relation: altRelation, transfer_deadline: null, notes: "تحويل فوري - بانتظار المطابقة" + (altName ? " | من حساب: " + altName : ""), bank_reference: pay.bank_reference || null };
+                        return { invoice_id: invoiceId, customer_id: customerId || null, method: pay.method, amount: pay.amount, status: "pending", transfer_type: bankType, debt_reason: null, alt_account_name: altName, alt_account_relation: altRelation, transfer_deadline: null, notes: "تحويل فوري - بانتظار المطابقة" + (altName ? " | من حساب: " + altName : ""), bank_reference: pay.bank_reference || null };
                     }
                     const deadlineHours = pay.transfer_deadline_hours || 0;
                     const deadlineAt = deadlineHours > 0 ? new Date(Date.now() + deadlineHours * 3600000).toISOString().replace("T"," ").substring(0,19) : null;
-                    return { invoice_id: invoiceId, method: pay.method, amount: pay.amount, status: "awaiting_transfer", transfer_type: bankType, debt_reason: "تحويل لاحق", alt_account_name: altName, alt_account_relation: altRelation, transfer_deadline: deadlineAt, notes: "سيحول لاحقا" + (deadlineHours > 0 ? " | مهلة: " + deadlineHours + " ساعة" : "") + (altName ? " | من حساب: " + altName : ""), bank_reference: pay.bank_reference || null, _needsNotification: true, _deadlineHours: deadlineHours };
+                    return { invoice_id: invoiceId, customer_id: customerId || null, method: pay.method, amount: pay.amount, status: "awaiting_transfer", transfer_type: bankType, debt_reason: "تحويل لاحق", alt_account_name: altName, alt_account_relation: altRelation, transfer_deadline: deadlineAt, notes: "سيحول لاحقا" + (deadlineHours > 0 ? " | مهلة: " + deadlineHours + " ساعة" : "") + (altName ? " | من حساب: " + altName : ""), bank_reference: pay.bank_reference || null, _needsNotification: true, _deadlineHours: deadlineHours };
                 }
 
                 for (const pay of payments) {
@@ -643,8 +884,27 @@ ipcMain.handle('get-app-info', async () => {
                         }
                     }
 
-                    const payData = buildPaymentData(pay, invoiceId);
+                    const payData = buildPaymentData(pay, invoiceId, customer_id);
                     insertPayment.run(payData);
+
+                    // Auto-save alt_account_name to customer_aliases for future matching
+                    if (payData.alt_account_name && customer_id) {
+                        try {
+                            const existingAlias = db.prepare(
+                                'SELECT id FROM customer_aliases WHERE customer_id = ? AND alias_name = ?'
+                            ).get(customer_id, payData.alt_account_name);
+                            if (!existingAlias) {
+                                db.prepare(
+                                    "INSERT INTO customer_aliases (customer_id, alias_name, normalized_name, source, confidence, usage_count, created_at) VALUES (?, ?, ?, 'invoice_alt', 'confirmed', 1, datetime('now','localtime'))"
+                                ).run(customer_id, payData.alt_account_name, payData.alt_account_name.toLowerCase().trim());
+                                console.log('[SaveInvoice] Saved alt alias:', payData.alt_account_name, '-> customer', customer_id);
+                            } else {
+                                db.prepare('UPDATE customer_aliases SET usage_count = usage_count + 1 WHERE id = ?').run(existingAlias.id);
+                            }
+                        } catch (aliasErr) {
+                            console.warn('[SaveInvoice] Alias save failed:', aliasErr.message);
+                        }
+                    }
 
                     // Send notification for deferred transfers
                     if (payData._needsNotification) {
@@ -672,9 +932,57 @@ ipcMain.handle('get-app-info', async () => {
     });
 
     // ==================== الفواتير ====================
+    // ==================== �������� ��� ����� ��� ���� ====================
+    ipcMain.handle('get-payment-stats', async (event, dateFrom, dateTo) => {
+        try {
+            const cash = db.prepare(`
+                SELECT COALESCE(SUM(p.amount), 0) as total
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE i.created_at >= ? AND i.created_at <= ? AND p.method = 'cash'
+            `).get(dateFrom, dateTo);
+
+            const card = db.prepare(`
+                SELECT COALESCE(SUM(p.amount), 0) as total
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE i.created_at >= ? AND i.created_at <= ? AND p.method = 'card'
+            `).get(dateFrom, dateTo);
+
+            const transfer = db.prepare(`
+                SELECT COALESCE(SUM(p.amount), 0) as total
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE i.created_at >= ? AND i.created_at <= ? AND p.method IN ('transfer', 'wallet')
+            `).get(dateFrom, dateTo);
+
+            const debt = db.prepare(`
+                SELECT COALESCE(SUM(p.amount), 0) as total
+                FROM payments p JOIN invoices i ON p.invoice_id = i.id
+                WHERE i.created_at >= ? AND i.created_at <= ? AND p.method = 'debt'
+            `).get(dateFrom, dateTo);
+
+            return {
+                success: true,
+                stats: {
+                    cash_total: cash.total,
+                    card_total: card.total,
+                    transfers_total: transfer.total,
+                    debts_total: debt.total
+                }
+            };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('get-recent-invoices', async (event, limit) => {
         try {
             const invoices = db.prepare('SELECT * FROM invoices ORDER BY created_at DESC LIMIT ?').all(limit || 20);
+            // إضافة payment_type لكل فاتورة
+            for (const inv of invoices) {
+                const payMethods = db.prepare('SELECT DISTINCT method FROM payments WHERE invoice_id = ?').all(inv.id);
+                if (payMethods.length === 0) inv.payment_type = null;
+                else if (payMethods.length === 1) inv.payment_type = payMethods[0].method;
+                else inv.payment_type = 'mixed';
+            }
             return { success: true, invoices };
         } catch (error) { return { success: false, error: error.message }; }
     });
@@ -925,7 +1233,7 @@ ipcMain.handle('get-app-info', async () => {
         try {
             const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(data.username);
             if (existing) return { success: false, error: 'اسم المستخدم موجود مسبقاً' };
-            db.prepare(`INSERT INTO users (username, password_hash, display_name, role, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, datetime('now','localtime'), datetime('now','localtime'))`).run(data.username, data.password, data.display_name, data.role||'cashier');
+            db.prepare(`INSERT INTO users (username, password, password_hash, display_name, role, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, datetime('now','localtime'), datetime('now','localtime'))`).run(data.username, data.password, data.password, data.display_name, data.role||'cashier');
             return { success: true };
         } catch (error) { return { success: false, error: error.message }; }
     });
@@ -933,7 +1241,7 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('update-user', async (event, id, data) => {
         try {
             if (data.password) {
-                db.prepare(`UPDATE users SET display_name=?, role=?, password_hash=?, updated_at=datetime('now','localtime') WHERE id=?`).run(data.display_name, data.role, data.password, id);
+                db.prepare(`UPDATE users SET display_name=?, role=?, password=?, password_hash=?, updated_at=datetime('now','localtime') WHERE id=?`).run(data.display_name, data.role, data.password, data.password, id);
             } else {
                 db.prepare(`UPDATE users SET display_name=?, role=?, updated_at=datetime('now','localtime') WHERE id=?`).run(data.display_name, data.role, id);
             }
@@ -978,14 +1286,6 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('import-bank-statement', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const result = matchingEngine.importBankStatement(data.rows, data.headers, data.fileName);
             return { success: true, batchId: result.batchId, total: result.total, incoming: result.incoming, outgoing: result.outgoing, skipped: result.skipped, entries: result.entries };
         } catch (err) { console.error('import-bank-statement error:', err); return { success: false, error: err.message }; }
@@ -1028,11 +1328,39 @@ ipcMain.handle('get-app-info', async () => {
         } catch (err) { return { success: false, error: err.message }; }
     });
 
+    ipcMain.handle('cleanup-test-invoices', async (event, ids) => {
+        try {
+            if (!ids || !Array.isArray(ids) || ids.length === 0) {
+                return { success: false, error: 'No invoice IDs provided' };
+            }
+            const placeholders = ids.map(() => '?').join(',');
+            const deleteItems = db.prepare('DELETE FROM invoice_items WHERE invoice_id IN (' + placeholders + ')');
+            const deletePayments = db.prepare('DELETE FROM payments WHERE invoice_id IN (' + placeholders + ')');
+            const deleteInvoices = db.prepare('DELETE FROM invoices WHERE id IN (' + placeholders + ')');
+            
+            db.transaction(() => {
+                deleteItems.run(...ids);
+                deletePayments.run(...ids);
+                deleteInvoices.run(...ids);
+            })();
+            
+            return { success: true, deleted: ids.length };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
     
     ipcMain.handle('clear-old-bank-data', async () => {
         try {
+            db.exec('PRAGMA foreign_keys = OFF;');
             db.prepare('DELETE FROM matching_attempts').run();
+            db.prepare('DELETE FROM payment_installments').run();
+            // [FIX] لا نحذف الديون عند مسح الكشوفات - الديون مستقلة عن البنك
+            db.prepare("UPDATE payments SET status = 'pending', paid_amount = 0, remaining_amount = NULL WHERE status = 'partial'").run();
             db.prepare('DELETE FROM bank_transactions').run();
+            db.exec('PRAGMA foreign_keys = ON;');
+            console.log('[Clear] All bank data cleared successfully');
             return { success: true };
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1132,14 +1460,6 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('run-matching', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const batchId = (data && data.batchId) ? data.batchId : null;
             const result = matchingEngine.runMatching(batchId);
             if (result.auto_confirmed && result.auto_confirmed.length > 0) {
@@ -1158,14 +1478,6 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('accept-match', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const pids = Array.isArray(data.paymentIds) ? data.paymentIds : [data.paymentId];
             const result = matchingEngine.acceptSuggestion(data.bankTransactionId, pids);
             if (result.success) {
@@ -1187,16 +1499,10 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('reject-match', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const pids = Array.isArray(data.paymentIds) ? data.paymentIds : [data.paymentId];
-            return matchingEngine.rejectSuggestion(data.bankTransactionId, pids);
+            const rejectResult = matchingEngine.rejectSuggestion(data.bankTransactionId, pids);
+            try { db.prepare("UPDATE matching_attempts SET decision = 'rejected' WHERE bank_transaction_id = ?").run(data.bankTransactionId); } catch(e) {}
+            return rejectResult;
         } catch (err) { return { success: false, error: err.message }; }
     });
 
@@ -1204,16 +1510,8 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('manual-match', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const pids = Array.isArray(data.paymentIds) ? data.paymentIds : [data.paymentId];
-            const result = matchingEngine.manualMatch(data.bankTransactionId, pids);
+            const result = matchingEngine.acceptSuggestion(data.bankTransactionId, pids);
             if (result.success) {
                 const invoiceIds = result.invoiceIds || [];
                 if (invoiceIds.length === 0) {
@@ -1233,14 +1531,6 @@ ipcMain.handle('get-app-info', async () => {
     ipcMain.handle('undo-match', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const result = matchingEngine.undoMatch(data.bankTransactionId);
             if (result.success) {
                 const attempts = db.prepare("SELECT DISTINCT p.invoice_id FROM matching_attempts ma JOIN payments p ON p.id=ma.payment_id WHERE ma.bank_transaction_id=?").all(data.bankTransactionId);
@@ -1252,14 +1542,6 @@ ipcMain.handle('get-app-info', async () => {
 ipcMain.handle('add-customer-alias', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return matchingEngine.addAliasManual(data.customerId, data.aliasName);
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1267,14 +1549,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('get-customer-aliases', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return matchingEngine.getAliases(data.customerId);
         } catch (err) { return []; }
     });
@@ -1282,14 +1556,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('get-matching-stats', async () => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return matchingEngine.getStats();
         } catch (err) { return {}; }
     });
@@ -1299,14 +1565,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('get-feedback-stats', async () => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return { success: true, stats: matchingEngine.feedback.getStats() };
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1314,14 +1572,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('get-audit-trail', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return { success: true, trail: matchingEngine.feedback.getAuditTrail(data.bankTransactionId) };
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1329,14 +1579,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('reverse-match', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return matchingEngine.feedback.reverseMatch(data.auditId, data.userId || 'user', data.reason || '');
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1344,14 +1586,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('get-aliases-for-customer', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return { success: true, aliases: matchingEngine.feedback.getAliasesForCustomer(data.customerId) };
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1359,14 +1593,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('add-alias', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return { success: true, result: matchingEngine.feedback.createOrUpdateAlias(data.customerId, data.aliasName, data.aliasType, data.createdBy || 'user') };
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1374,14 +1600,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('delete-alias', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             return matchingEngine.feedback.deleteAlias(data.aliasId);
         } catch (err) { return { success: false, error: err.message }; }
     });
@@ -1389,14 +1607,6 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
     ipcMain.handle('find-customer-by-alias', async (event, data) => {
         try {
             if (!matchingEngine) matchingEngine = new MatchingEngine(db);
-        
-        // Migration v8  إضافة أعمدة المطابقة الذكية
-        try {
-            const migResult = runMigrationV8(db);
-            console.log('[Migration v8] added:', migResult.added, '| skipped:', migResult.skipped);
-        } catch (migErr) {
-            console.error('[Migration v8] Error:', migErr.message);
-        }
             const result = matchingEngine.feedback.findCustomerByAlias(data.name);
             return { success: true, customer: result };
         } catch (err) { return { success: false, error: err.message }; }
@@ -1469,3 +1679,77 @@ ipcMain.handle('add-customer-alias', async (event, data) => {
   });
 
   // === فحص الرقم المرجعي ===
+
+// ==================== نظام التفعيل ====================
+
+function openActivationWindow() {
+    if (activationWindow) {
+        activationWindow.focus();
+        return;
+    }
+
+    activationWindow = new BrowserWindow({
+        width: 1000,
+        height: 700,
+        minWidth: 800,
+        minHeight: 600,
+        resizable: true,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload-activation.js'),
+            contextIsolation: true,
+            nodeIntegration: false
+        },
+        icon: path.join(__dirname, '../../assets/icon.ico'),
+        title: 'تفعيل البرنامج - أبو كميل POS',
+        show: false,
+        autoHideMenuBar: true
+    });
+
+    activationWindow.loadFile(path.join(__dirname, '../renderer/pages/activation.html'));
+    activationWindow.once('ready-to-show', () => activationWindow.show());
+    activationWindow.on('closed', () => {
+        activationWindow = null;
+        // إذا أُغلقت نافذة التفعيل بدون تفعيل، أقفل التطبيق
+        const check = licenseManager.checkLicense();
+        if (!check.valid && (!mainWindow || mainWindow.isDestroyed())) {
+            app.quit();
+        }
+    });
+}
+
+function registerLicenseHandlers() {
+    ipcMain.handle('license-get-machine-id', async () => {
+        try {
+            return { success: true, machineId: licenseManager.getMachineId() };
+        } catch(e) { return { success: false, error: e.message }; }
+    });
+
+    ipcMain.handle('license-check', async () => {
+        try {
+            return licenseManager.checkLicense();
+        } catch(e) { return { valid: false, error: e.message }; }
+    });
+
+    ipcMain.handle('license-activate', async (event, key) => {
+        try {
+            const result = licenseManager.activateLicense(key);
+            return result;
+        } catch(e) { return { valid: false, error: e.message }; }
+    });
+
+    ipcMain.handle('license-enter-app', async () => {
+        try {
+            const check = licenseManager.checkLicense();
+            if (!check.valid) return { success: false, error: check.error };
+
+            // أغلق نافذة التفعيل وافتح التطبيق
+            if (activationWindow && !activationWindow.isDestroyed()) {
+                activationWindow.close();
+            }
+            if (!mainWindow || mainWindow.isDestroyed()) {
+                createWindow();
+            }
+            return { success: true };
+        } catch(e) { return { success: false, error: e.message }; }
+    });
+}
