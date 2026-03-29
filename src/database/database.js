@@ -110,7 +110,8 @@ function createCoreTables(db) {
       icon         TEXT DEFAULT '',
       sort_order   INTEGER DEFAULT 0,
       is_active    INTEGER DEFAULT 1,
-      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at   TEXT DEFAULT (datetime('now'))
     )
   `).run();
 
@@ -384,8 +385,11 @@ function createNameLearningTable(db) {
       payment_id          INTEGER REFERENCES payments(id),
       bank_transaction_id INTEGER REFERENCES bank_transactions(id),
       confidence          REAL DEFAULT 0,
+      score               REAL DEFAULT 0,
       status              TEXT DEFAULT 'pending',
+      decision            TEXT DEFAULT 'pending',
       match_reason        TEXT,
+      match_level         TEXT,
       created_at          TEXT DEFAULT (datetime('now'))
     )
   `).run();
@@ -546,6 +550,9 @@ function runColumnMigrations(db) {
   addCol(db, 'payments', 'bank_reference',   'TEXT');
   addCol(db, 'payments', 'notes',            'TEXT');
 
+  // ── categories ─────────────────────────────────────────────────────────────
+  addCol(db, 'categories', 'updated_at', 'TEXT DEFAULT NULL');
+
   // ── customers ─────────────────────────────────────────────────────────────
   // matching-engine JOINs customers.is_home_transfer
   addCol(db, 'customers', 'is_home_transfer', 'INTEGER NOT NULL DEFAULT 0');
@@ -566,6 +573,11 @@ function runColumnMigrations(db) {
   addCol(db, 'name_learning', 'use_count',          'INTEGER NOT NULL DEFAULT 1');
   addCol(db, 'name_learning', 'confirmed_by',       "TEXT NOT NULL DEFAULT 'manual'");
   addCol(db, 'name_learning', 'last_used_at',       'TEXT DEFAULT NULL');
+
+  // ── matching_attempts ─────────────────────────────────────────────────────
+  addCol(db, 'matching_attempts', 'score',       'REAL DEFAULT 0');
+  addCol(db, 'matching_attempts', 'decision',    "TEXT DEFAULT 'pending'");
+  addCol(db, 'matching_attempts', 'match_level', 'TEXT');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -637,7 +649,19 @@ function runOneTimeCleanup(db) {
       const r = db.prepare('DELETE FROM payment_installments').run();
       console.log(`[DB] Cleared payment_installments: ${r.changes} rows`);
 
-  // فهارس تسريع المطابقة (المرحلة 2)   const newIndexes = [     ['idx_bank_tx_pending_date', "CREATE INDEX IF NOT EXISTS idx_bank_tx_pending_date ON bank_transactions (match_status, parsed_date) WHERE match_status = 'pending'"],     ['idx_bank_tx_payer_name', "CREATE INDEX IF NOT EXISTS idx_bank_tx_payer_name ON bank_transactions (payer_name_normalized) WHERE payer_name_normalized IS NOT NULL"],     ['idx_payments_pending_method', "CREATE INDEX IF NOT EXISTS idx_payments_pending_method ON payments (status, method, created_at)"],     ['idx_payments_customer', "CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments (customer_id)"]   ];   for (const [name, sql] of newIndexes) {     if (!indexExists(db, name)) {       db.prepare(sql).run();       console.log('[DB] Created index:', name);     }   }
+  // فهارس تسريع المطابقة (المرحلة 2)
+      const newIndexes = [
+        ['idx_bank_tx_pending_date', "CREATE INDEX IF NOT EXISTS idx_bank_tx_pending_date ON bank_transactions (match_status, parsed_date) WHERE match_status = 'pending'"],
+        ['idx_bank_tx_payer_name', "CREATE INDEX IF NOT EXISTS idx_bank_tx_payer_name ON bank_transactions (payer_name_normalized) WHERE payer_name_normalized IS NOT NULL"],
+        ['idx_payments_pending_method', "CREATE INDEX IF NOT EXISTS idx_payments_pending_method ON payments (status, method, created_at)"],
+        ['idx_payments_customer', "CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments (customer_id)"]
+      ];
+      for (const [name, sql] of newIndexes) {
+        if (!indexExists(db, name)) {
+          db.prepare(sql).run();
+          console.log('[DB] Created index:', name);
+        }
+      }
     }
 
     // 2. Reset match_status and matched_payment_id for all rows
@@ -706,12 +730,8 @@ function runOneTimeCleanup(db) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function seedInitialData(db) {
-  if (db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) {
-    db.prepare(`
-      INSERT INTO users (username, password, password_hash, display_name, role, is_active)
-      VALUES ('admin','admin123','admin123','مدير النظام','admin',1), ('cashier','cashier123','cashier123','كاشير','cashier',1)
-    `).run();
-
+  // ── Create grouped_matches and installments UNCONDITIONALLY ──
+  // These tables must exist regardless of whether users are seeded.
   db.prepare(`
     CREATE TABLE IF NOT EXISTS grouped_matches (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -723,7 +743,6 @@ function seedInitialData(db) {
       status      TEXT DEFAULT 'pending',
       reversed_at TEXT DEFAULT NULL,
       created_at  TEXT DEFAULT (datetime('now'))
-    ))
     )
   `).run();
 
@@ -740,10 +759,15 @@ function seedInitialData(db) {
       notes       TEXT DEFAULT '',
       created_at  TEXT DEFAULT (datetime('now')),
       updated_at  TEXT DEFAULT (datetime('now'))
-    )),
-      updated_at  TEXT DEFAULT (datetime('now'))
     )
   `).run();
+
+  // ── Seed default users ──
+  if (db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) {
+    db.prepare(`
+      INSERT INTO users (username, password, password_hash, display_name, role, is_active)
+      VALUES ('admin','admin123','admin123','مدير النظام','admin',1), ('cashier','cashier123','cashier123','كاشير','cashier',1)
+    `).run();
     console.log('[DB] Seeded users');
   }
 
